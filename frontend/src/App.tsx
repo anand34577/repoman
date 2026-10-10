@@ -193,7 +193,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
               </Stack>
             ))}
           </AppShell.Section>
-          <AppShell.Section>
+          <AppShell.Section className="nav-footer">
             <Divider mb="sm" />
             <Text size="xs" c="dimmed" px="sm">Press <Kbd size="xs">Ctrl</Kbd> + <Kbd size="xs">K</Kbd> to jump anywhere</Text>
           </AppShell.Section>
