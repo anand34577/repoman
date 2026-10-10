@@ -176,9 +176,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           {
-            # the section of CHANGELOG.md for this version, if there is one
+            # the section of CHANGELOG.md for this version ("## [1.2.3]" or "## 1.2.3"), if there is one;
+            # an exact comparison, since a regex built from the version treats its dots as wildcards
             awk -v v="$version" '
-              /^## / { printing = ($0 ~ "^## \\[?" v "\\]?") }
+              /^## / { printing = ($0 == "## [" v "]" || $0 == "## " v) }
               printing { print }
             ' CHANGELOG.md | sed '1d'
             echo
