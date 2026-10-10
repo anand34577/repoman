@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0]
+
+Adds Conda repositories and is the first release published from this repository.
+
 ### Added
 
 - **Conda repositories** (conda, mamba, micromamba, pixi). *Hosted* channels accept `.conda` and `.tar.bz2`
@@ -12,6 +16,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   *Proxy* channels cache conda-forge, bioconda or Anaconda; cached content stays available while the upstream is
   down. Conda repositories can't be grouped; list several channels in `.condarc`. New audit, webhook and
   notification event: `conda.upload`. See [Conda](docs/repositories.md#conda).
+- Screenshots of the web UI in the README.
+
+### Security
+
+- Built with Go 1.26.9, which fixes vulnerabilities in the HTTP server and client, header parsing and TLS of
+  the Go standard library (GO-2026-6603, -6605, -6607 to -6613 and -6617). Upgrading is recommended.
 
 ### Upgrade notes
 
