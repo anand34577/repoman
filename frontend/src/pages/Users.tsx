@@ -5,7 +5,7 @@ import { IconPencil, IconPlus, IconSearch, IconTrash, IconUserOff } from '@table
 import { useState } from 'react'
 import { useAuth } from '../App'
 import { api, useApi, type Role, type User } from '../api'
-import { confirmAction, EmptyState, fullDate, LoadError, notifyError, notifyOk, PageHeader, timeAgo } from '../util'
+import { confirmAction, EmptyState, fullDate, LoadError, notifyError, notifyOk, PageHeader, Pager, timeAgo, usePaging } from '../util'
 
 const roles: { value: Role; label: string; description: string; color: string }[] = [
   { value: 'viewer', label: 'Viewer', description: 'Browse, search and download from repositories they can read.', color: 'gray' },
@@ -19,6 +19,7 @@ export default function Users() {
   const { data, error, reload } = useApi<User[]>('/users')
   const [editing, setEditing] = useState<User | 'new' | null>(null)
   const [q, setQ] = useState('')
+  const paging = usePaging()
 
   const remove = (u: User) => confirmAction({
     title: `Delete user ${u.username}?`, danger: true, label: 'Delete user',
@@ -27,6 +28,7 @@ export default function Users() {
   })
   const ql = q.trim().toLowerCase()
   const rows = data?.filter((u) => u.username.toLowerCase().includes(ql) || u.email.toLowerCase().includes(ql))
+  const shown = rows?.slice(paging.offset, paging.offset + paging.size)
 
   return (
     <>
@@ -44,14 +46,14 @@ export default function Users() {
       </SimpleGrid>
       <Card padding={0}>
         <Group p="md" justify="flex-end">
-          <TextInput size="xs" placeholder="Filter by name or email" aria-label="Filter users" leftSection={<IconSearch size={14} />} value={q} onChange={(e) => setQ(e.currentTarget.value)} />
+          <TextInput size="xs" placeholder="Filter by name or email" aria-label="Filter users" leftSection={<IconSearch size={14} />} value={q} onChange={(e) => { setQ(e.currentTarget.value); paging.setPage(1, true) }} />
         </Group>
         <Table.ScrollContainer minWidth={700}>
           <Table verticalSpacing="sm" horizontalSpacing="lg" highlightOnHover>
             <Table.Thead><Table.Tr><Table.Th>User</Table.Th><Table.Th>Role</Table.Th><Table.Th>Status</Table.Th><Table.Th>Last sign-in</Table.Th><Table.Th>Created</Table.Th><Table.Th /></Table.Tr></Table.Thead>
             <Table.Tbody>
               {!data && !error && Array.from({ length: 3 }, (_, i) => <Table.Tr key={i}><Table.Td colSpan={6}><Skeleton h={36} /></Table.Td></Table.Tr>)}
-              {rows?.map((u) => (
+              {shown?.map((u) => (
                 <Table.Tr key={u.username} opacity={u.disabled ? 0.6 : 1}>
                   <Table.Td>
                     <Group gap="sm" wrap="nowrap">
@@ -79,6 +81,7 @@ export default function Users() {
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
+        <Pager paging={paging} total={rows?.length} noun="users" />
         {rows?.length === 0 && <EmptyState icon={<IconUserOff />} title="No users match your filter">Try a different name or email.</EmptyState>}
       </Card>
       <Modal opened={!!editing} onClose={() => setEditing(null)} title={<Text fw={600}>{editing === 'new' ? 'Add user' : `Edit ${editing?.username ?? ''}`}</Text>} size="lg">

@@ -543,6 +543,11 @@ func fullScope(f apiFunc) apiFunc {
 
 type apiFunc func(w http.ResponseWriter, r *http.Request, u *User) (any, error)
 
+// alreadyWritten is returned by handlers that wrote their own response body (CSV exports).
+type alreadyWritten struct{}
+
+var written = alreadyWritten{}
+
 // api wraps a JSON handler with authentication and a minimum role.
 func (a *App) api(role string, f apiFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -573,6 +578,7 @@ func (a *App) api(role string, f apiFunc) http.HandlerFunc {
 		case err != nil:
 			log.Printf("api %s %s: %v", r.Method, r.URL.Path, err)
 			writeJSON(w, 500, errBody(err.Error()))
+		case res == written:
 		case res == nil:
 			w.WriteHeader(204)
 		default:

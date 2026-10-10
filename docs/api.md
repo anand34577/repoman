@@ -71,7 +71,10 @@ Errors have a matching HTTP status and a JSON body with one field:
   their defaults.
 - **Secrets are write-only.** Passwords, upstream credentials, webhook secrets and notification tokens are
   never returned. On update, send an empty string (or omit the field) to keep the stored value.
-- Lists are returned whole (no pagination) except where a limit is stated.
+- Lists are returned whole except the paged ones: browse, components, search and the audit log. These take
+  `offset` (default 0) and `limit` (at most 1000; default stated per endpoint) and still return a plain JSON
+  array. The number of matches is in the `X-Total-Count` response header; for search and the audit log it
+  stops counting at 10,001, so a value above 10,000 means "more than 10,000".
 - There is no CORS support: the API is meant for server-side and command-line clients, not for JavaScript on
   other websites.
 
@@ -169,9 +172,12 @@ Deletes the repository **and all its artifacts**, and removes it from every grou
 
 ## Browse and search
 
-### Browse a folder — `GET /repositories/{name}/browse?path=<folder>` · viewer
+### Browse a folder — `GET /repositories/{name}/browse?path=<folder>&q=<filter>` · viewer
 
-`path` is empty for the root. Folders come first, then files, each sorted by name.
+`path` is empty for the root. Folders come first, then files, each sorted by name. `q` keeps entries whose
+name contains it (case-insensitive). Paged, default limit 1000.
+
+One artifact by path: `GET /repositories/{name}/asset?path=<path>` → the artifact object, 404 if absent.
 
 ```json
 [
@@ -180,9 +186,10 @@ Deletes the repository **and all its artifacts**, and removes it from every grou
 ]
 ```
 
-### Components — `GET /repositories/{name}/components?q=<filter>` · viewer
+### Components — `GET /repositories/{name}/components?q=<filter>&sort=<order>` · viewer
 
-Artifacts grouped into components (packages, images, modules) and versions.
+Artifacts grouped into components (packages, images, modules) and versions, newest version first. `sort` is
+`name` (default), `updated`, `downloads` or `size`. Paged by component, default limit 1000.
 
 ```json
 [{"name": "com.acme:lib", "assets": 6, "size": 20480, "downloads": 31, "updatedAt": 1760000000,
@@ -192,7 +199,8 @@ Artifacts grouped into components (packages, images, modules) and versions.
 ### Search — `GET /search?q=<text>&repo=<name>&format=<format>` · viewer
 
 Matches the text anywhere in the path or component name, across all repositories the caller can read.
-`repo` and `format` are optional filters. Returns up to 500 artifacts, most recently updated first.
+`repo` and `format` are optional filters. `sort` is `updated` (default, most recent first), `name`,
+`downloads` or `size`. Paged, default limit 500.
 
 ### The artifact object
 
@@ -348,8 +356,11 @@ Task ids: `cleanup`, `purge`, `blob-compact`, `optimize-db`, `blob-verify`, `reb
 
 ## Audit log
 
-`GET /audit?q=<text>&action=<prefix>` · admin — the newest 1000 matching events, newest first. `q` matches
-user, action or target; `action` is a prefix such as `login` or `repository.`.
+`GET /audit?q=<text>&action=<prefix>` · admin — matching events, newest first; paged, default limit 1000.
+`q` matches user, action or target; `action` is a prefix such as `login` or `repository.`.
+
+`GET /audit/export?q=<text>&action=<prefix>` · admin — every matching event as CSV
+(`time,user,action,target,detail`, times in UTC).
 
 ```json
 [{"id": 981, "ts": 1760003600, "username": "alice", "action": "docker.push", "target": "docker-hosted/team/api:1.4.0", "detail": ""}]

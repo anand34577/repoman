@@ -5,6 +5,37 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0]
+
+Makes the web UI usable with hundreds of thousands of artifacts.
+
+### Added
+
+- Pagination everywhere a list can grow large: search, the audit log, folder browsing and components are paged
+  on the server; repositories, users and per-repository access are paged in the browser. Page and page size
+  are kept in the URL, so a page can be shared or reloaded. Search and components can be sorted; repositories
+  too.
+- Folder filtering in *Browse* now searches the whole folder, not just the loaded entries. Links to an artifact
+  (for example from search) open it even when it is on a later page.
+- The audit log export contains every matching event (streamed by the server), not only the rows on screen.
+- Browser uploads show progress and can be cancelled.
+- The *Access* tab can filter users and show only those with an override; unsaved changes are kept across pages.
+- REST API: `offset`/`limit` and the `X-Total-Count` header on browse, components, search and audit;
+  `GET /repositories/{name}/asset`, `GET /audit/export`. Responses are still plain arrays.
+
+### Fixed
+
+- Browsing a folder no longer loads every artifact below it into memory, and folders with non-ASCII names list
+  correctly.
+- On short screens, the admin sidebar no longer runs off the bottom of the window, and scrolling it no
+  longer scrolls the page too.
+- Lists ignore responses that arrive out of order, so fast typing in a filter can't show stale results.
+
+### Performance
+
+- New database indexes for search ordering, per-repository totals and the dashboard. They are created on the
+  first start after upgrading, which can take a minute on very large databases.
+
 ## [1.3.0]
 
 Adds Conda repositories and is the first release published from this repository.

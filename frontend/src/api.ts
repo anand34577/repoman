@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type Role = 'viewer' | 'developer' | 'admin'
 export type Format = 'maven' | 'npm' | 'pypi' | 'docker' | 'go' | 'apt' | 'yum' | 'conda' | 'raw'
@@ -142,6 +142,11 @@ export class ApiError extends Error {
 }
 
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+  return (await apiWithTotal<T>(path, opts)).data
+}
+
+/** Like api, plus the X-Total-Count header that paged list endpoints send (capped at 10,001). */
+export async function apiWithTotal<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<{ data: T; total?: number }> {
   const isForm = opts.body instanceof FormData
   const res = await fetch('/api' + path, {
     method: opts.method ?? (opts.body ? 'POST' : 'GET'),
@@ -149,28 +154,35 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
     headers: opts.body && !isForm ? { 'Content-Type': 'application/json' } : undefined,
     body: isForm ? (opts.body as FormData) : opts.body ? JSON.stringify(opts.body) : undefined,
   })
-  if (res.status === 204) return undefined as T
+  if (res.status === 204) return { data: undefined as T }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('rm:unauthorized'))
     throw new ApiError(res.status, data.error ?? res.statusText)
   }
-  return data as T
+  const total = res.headers.get('X-Total-Count')
+  return { data: data as T, total: total === null ? undefined : Number(total) }
 }
 
-/** Fetches `path` on mount and whenever it changes; `reload` re-runs it. Pass null to skip. */
+/**
+ * Fetches `path` on mount and whenever it changes; `reload` re-runs it. Pass null to skip.
+ * Previous data stays visible while the next page loads, and responses that arrive out of order are dropped.
+ */
 export function useApi<T>(path: string | null) {
   const [data, setData] = useState<T>()
+  const [total, setTotal] = useState<number>()
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(path !== null)
+  const latest = useRef(0)
   const reload = useCallback(() => {
     if (path === null) return Promise.resolve()
+    const id = ++latest.current
     setLoading(true)
-    return api<T>(path)
-      .then((d) => { setData(d); setError(undefined) })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false))
+    return apiWithTotal<T>(path)
+      .then((r) => { if (id === latest.current) { setData(r.data); setTotal(r.total); setError(undefined) } })
+      .catch((e: Error) => { if (id === latest.current) setError(e.message) })
+      .finally(() => { if (id === latest.current) setLoading(false) })
   }, [path])
   useEffect(() => { reload() }, [reload])
-  return { data, error, loading, reload, setData }
+  return { data, total, error, loading, reload, setData }
 }

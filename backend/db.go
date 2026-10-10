@@ -117,6 +117,9 @@ var migrations = []string{
 	`ALTER TABLE users ADD COLUMN local_login INTEGER NOT NULL DEFAULT 1`,
 	`CREATE INDEX IF NOT EXISTS events_ts ON events(ts)`,
 	`ALTER TABLE tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'`,
+	`CREATE INDEX IF NOT EXISTS assets_updated ON assets(updated_at)`,
+	`CREATE INDEX IF NOT EXISTS assets_created ON assets(created_at)`,               // dashboard "recently published"
+	`CREATE INDEX IF NOT EXISTS assets_repo_stats ON assets(repo, size, downloads)`, // index-only per-repo totals
 }
 
 func openDB(file string) (*sql.DB, error) {
@@ -292,9 +295,20 @@ func (a *App) findAsset(repo, p string) (*Asset, error) {
 	return x, err
 }
 
+// prefixWhere matches paths starting with prefix as a range on the (repo, path) index instead of a scan.
+func prefixWhere(prefix string) (string, []any) {
+	if prefix == "" {
+		return "", nil
+	}
+	hi := []byte(prefix)
+	hi[len(hi)-1]++ // a UTF-8 byte is never 0xff
+	return ` AND path >= ? AND path < ?`, []any{prefix, string(hi)}
+}
+
 // assetsUnder lists assets in repo whose path starts with prefix.
 func (a *App) assetsUnder(repo, prefix string) ([]*Asset, error) {
-	return a.queryAssets(`WHERE repo=? AND substr(path, 1, ?)=? ORDER BY path`, repo, len(prefix), prefix)
+	where, args := prefixWhere(prefix)
+	return a.queryAssets(`WHERE repo=?`+where+` ORDER BY path`, append([]any{repo}, args...)...)
 }
 
 type assetMeta struct {

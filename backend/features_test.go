@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -298,5 +299,49 @@ func TestWebhooks(t *testing.T) {
 	case <-got:
 		t.Fatal("event for a filtered-out repository was delivered")
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestPagination(t *testing.T) {
+	e := newEnv(t)
+	for _, p := range []string{"b/1.txt", "b/2.txt", "a/x.txt", "é/y.txt", "é/z/deep.txt", "f1.txt", "f2.txt", "f3.txt", "élan.txt"} {
+		e.must("upload "+p, 201, "PUT", "/repository/raw-hosted/"+p, strings.NewReader(p), admin)
+	}
+	names := func(body string) (out []string) {
+		var list []browseEntry
+		json.Unmarshal([]byte(body), &list)
+		for _, x := range list {
+			out = append(out, x.Name)
+		}
+		return out
+	}
+	page := func(q string) (string, string) {
+		c, b, h := e.req("GET", "/api/repositories/raw-hosted/browse?"+q, nil, admin)
+		if c != 200 {
+			t.Fatalf("browse %s: %d %s", q, c, b)
+		}
+		return strings.Join(names(b), ","), h.Get("X-Total-Count")
+	}
+	// folders first, then files; pages cross the folder/file boundary
+	if got, total := page("limit=4"); got != "a,b,é,f1.txt" || total != "7" {
+		t.Fatalf("page 1: %s (total %s)", got, total)
+	}
+	if got, _ := page("limit=4&offset=4"); got != "f2.txt,f3.txt,élan.txt" {
+		t.Fatalf("page 2: %s", got)
+	}
+	if got, total := page("path=" + url.QueryEscape("é")); got != "z,y.txt" || total != "2" {
+		t.Fatalf("non-ASCII folder: %s (total %s)", got, total)
+	}
+	if got, total := page("q=F2"); got != "f2.txt" || total != "1" {
+		t.Fatalf("filter: %s (total %s)", got, total)
+	}
+	e.must("deep link", 200, "GET", "/api/repositories/raw-hosted/asset?path="+url.QueryEscape("é/z/deep.txt"), nil, admin)
+
+	_, b, h := e.req("GET", "/api/search?q=.txt&limit=2&sort=name", nil, admin)
+	if h.Get("X-Total-Count") != "9" || strings.Count(b, `"id"`) != 2 {
+		t.Fatalf("search page: total %s, %s", h.Get("X-Total-Count"), b)
+	}
+	if b := e.must("audit csv", 200, "GET", "/api/audit/export?q=raw-hosted", nil, admin); !strings.HasPrefix(b, "time,user,action,target,detail\n") || !strings.Contains(b, "raw-hosted/f1.txt") {
+		t.Fatalf("audit csv: %s", b)
 	}
 }

@@ -47,6 +47,13 @@ body {
 }
 
 .app-navbar { background: var(--mantine-color-body); }
+/* the sidebar scrolls on its own when taller than the window; never drag the page along */
+.app-navbar .mantine-ScrollArea-viewport { overscroll-behavior: contain; }
+/* short windows (laptops at 125%+ zoom): keep every link visible instead of scrolling the menu */
+@media (max-height: 720px) {
+  .app-navbar .nav-link { padding-block: 5px; }
+  .nav-footer { display: none; }
+}
 
 .nav-section-label {
   letter-spacing: 0.06em;
