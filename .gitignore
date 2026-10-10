@@ -1,0 +1,30 @@
+# build output
+/dist/
+/repoman
+/repoman.exe
+/backend/repoman
+/backend/repoman.exe
+/backend/ui/dist/
+node_modules/
+
+# runtime data: database (password hashes, signing key, upstream credentials) and artifacts
+/backend/data/
+/data/
+*.db
+*.db-shm
+*.db-wal
+initial-admin-password
+
+# local configuration and secrets
+repoman.env
+.env
+*.pem
+*.key
+
+# editors / OS / local tooling
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.claude/
+Claude-Account-*.cmd

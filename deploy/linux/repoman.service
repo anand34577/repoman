@@ -1,0 +1,59 @@
+[Unit]
+Description=RepoMan artifact repository manager
+Documentation=file:///usr/local/share/doc/repoman/installation.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=repoman
+Group=repoman
+EnvironmentFile=-/etc/repoman/repoman.env
+ExecStart=/usr/local/bin/repoman serve
+Restart=on-failure
+RestartSec=5
+# RepoMan drains requests in flight for up to 30 seconds on SIGTERM.
+TimeoutStopSec=40
+LimitNOFILE=65536
+
+# The data directory (/var/lib/repoman, mode 0700) is created and owned by systemd.
+StateDirectory=repoman
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/repoman
+UMask=0077
+
+# Sandbox: the service can write only to its data directory and sees no home directories or devices.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# To listen on a port below 1024 (e.g. RM_ADDR=:443), create a drop-in with `systemctl edit repoman`:
+#   [Service]
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+#
+# To store data elsewhere, set RM_DATA_DIR in /etc/repoman/repoman.env and add a drop-in:
+#   [Service]
+#   ReadWritePaths=/srv/repoman
+
+[Install]
+WantedBy=multi-user.target

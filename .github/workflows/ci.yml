@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the web UI (type-checks, then bundles into backend/ui/dist)
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Test
+        working-directory: backend
+        # the race detector needs cgo, which the Linux and macOS runners provide out of the box
+        run: go test ${{ runner.os != 'Windows' && '-race' || '' }} -count=1 ./...
+
+  checks:
+    name: Format, dependencies, vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt
+        working-directory: backend
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go.mod is tidy
+        working-directory: backend
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Build the web UI
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+
+      - name: Known vulnerabilities in Go dependencies
+        working-directory: backend
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Known vulnerabilities in shipped npm dependencies
+        run: npm --prefix frontend audit --omit=dev --audit-level=high
+
+  package:
+    name: Cross-compile and container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Build every release archive
+        run: scripts/build-release.sh 0.0.0-ci
+
+      - name: Linux binary starts and reports healthy
+        run: |
+          tar -xzf dist/repoman_0.0.0-ci_linux_amd64.tar.gz
+          cd repoman_0.0.0-ci_linux_amd64
+          ./repoman version
+          RM_ADDR=127.0.0.1:18081 RM_DATA_DIR="$RUNNER_TEMP/data" ./repoman serve &
+          for i in $(seq 1 30); do
+            RM_ADDR=127.0.0.1:18081 ./repoman healthcheck && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: repoman:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container starts and reports healthy
+        run: |
+          docker run -d --name repoman --read-only --tmpfs /tmp --cap-drop ALL -p 8081:8081 repoman:ci
+          for i in $(seq 1 30); do
+            if docker exec repoman repoman healthcheck; then
+              docker logs repoman
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs repoman
+          exit 1

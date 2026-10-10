@@ -1,0 +1,608 @@
+import {
+  ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Button, Card, Code, Drawer, Group, Loader, Menu, Modal, Progress, Select, SimpleGrid, Skeleton,
+  Stack, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip,
+} from '@mantine/core'
+import { Dropzone } from '@mantine/dropzone'
+import { useDebouncedValue, useDocumentTitle } from '@mantine/hooks'
+import {
+  IconAlertTriangle, IconArrowLeft, IconBolt, IconChevronDown, IconChevronRight, IconDots, IconDownload, IconFile, IconFolder,
+  IconFolderOpen, IconInfoCircle, IconKey, IconLock, IconPackage, IconPlayerPause, IconPlayerPlay, IconPlugConnected, IconRefresh,
+  IconSearch, IconTrash, IconUpload, IconWand, IconX,
+} from '@tabler/icons-react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useAuth, useBaseUrl, useIsAdmin } from '../App'
+import {
+  api, useApi, type Access, type Asset, type BrowseEntry, type Component, type Permission, type RemoteTest, type Repo, type User,
+} from '../api'
+import { formatInfo } from '../formats'
+import { clientGuides, repoUrl } from '../setup'
+import {
+  confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, StatusBadge, timeAgo, TypeBadge,
+} from '../util'
+import { RepoSettingsFields } from './RepoConfig'
+import { downloadUrl } from '../links'
+
+export default function RepoDetail() {
+  const { name = '', '*': sub } = useParams()
+  const tab = sub || 'browse'
+  const navigate = useNavigate()
+  const isAdmin = useIsAdmin()
+  const base = useBaseUrl()
+  const repo = useApi<Repo>(`/repositories/${name}`)
+  useDocumentTitle(`${name} · RepoMan`)
+
+  if (repo.error) return (
+    <EmptyState icon={<IconLock />} title="Repository not found" action={<Button component={Link} to="/repositories" variant="light">Back to repositories</Button>}>
+      It doesn't exist, or you don't have access to it.
+    </EmptyState>
+  )
+  if (!repo.data) return (
+    <Stack gap="md" aria-busy="true">
+      <Skeleton h={14} w={120} />
+      <Group><Skeleton h={48} w={48} radius="md" /><Stack gap={8} flex={1}><Skeleton h={24} w="40%" /><Skeleton h={14} w="60%" /></Stack></Group>
+      <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={62} radius="lg" />)}</SimpleGrid>
+      <Skeleton h={320} radius="lg" />
+    </Stack>
+  )
+  const r = repo.data
+  const url = repoUrl(base, r)
+  const canWrite = r.access === 'write'
+  const quotaPct = r.quotaMb ? Math.min(100, ((r.size ?? 0) / (r.quotaMb * 1048576)) * 100) : 0
+  const FIcon = formatInfo(r.format).icon
+
+  return (
+    <>
+      <Anchor component={Link} to="/repositories" size="sm" c="dimmed">
+        <Group gap={4}><IconArrowLeft size={14} />Repositories</Group>
+      </Anchor>
+      <Group justify="space-between" mt="xs" mb="md" align="flex-start">
+        <Group align="flex-start" wrap="nowrap">
+          <ThemeIcon size={48} radius="md" variant="light" color={formatInfo(r.format).color}><FIcon size={28} /></ThemeIcon>
+          <div>
+            <Group gap="xs">
+              <Title order={2}>{r.name}</Title>
+              <FormatBadge format={r.format} />
+              <TypeBadge type={r.type} />
+              <StatusBadge repo={r} />
+              {r.private && <Badge variant="outline" color="gray" leftSection={<IconLock size={12} />}>private</Badge>}
+              {r.access === 'read' && <Badge variant="outline" color="gray">read-only for you</Badge>}
+            </Group>
+            {r.description && <Text c="dimmed" size="sm">{r.description}</Text>}
+            <Group gap={4} mt={4}>
+              <Text ff="monospace" size="sm">{url}</Text>
+              <Copy value={url} label="Copy URL" />
+            </Group>
+          </div>
+        </Group>
+        {isAdmin && <RepoActions repo={r} onChanged={repo.reload} onDeleted={() => navigate('/repositories')} />}
+      </Group>
+
+      <SimpleGrid cols={{ base: 2, sm: 4 }} mb="md" spacing="sm">
+        <Card padding="sm"><Text size="xs" c="dimmed">Artifacts</Text><Text fw={600}>{(r.assetCount ?? 0).toLocaleString()}</Text></Card>
+        <Card padding="sm"><Text size="xs" c="dimmed">Size</Text><Text fw={600}>{formatBytes(r.size)}</Text></Card>
+        <Card padding="sm"><Text size="xs" c="dimmed">Downloads</Text><Text fw={600}>{(r.downloads ?? 0).toLocaleString()}</Text></Card>
+        <Card padding="sm">
+          {r.quotaMb ? <>
+            <Text size="xs" c="dimmed">Quota · {quotaPct.toFixed(0)}% of {r.quotaMb} MB</Text>
+            <Progress value={quotaPct} color={quotaPct > 90 ? 'red' : quotaPct > 75 ? 'orange' : 'teal'} mt={8} />
+          </> : <>
+            <Text size="xs" c="dimmed">{r.type === 'group' ? 'Members' : 'Cleanup'}</Text>
+            <Text fw={600} size="sm" truncate="end">{r.type === 'group' ? r.members?.join(', ') : [r.cleanupDays && `unused ${r.cleanupDays}d`, r.retainVersions && `keep ${r.retainVersions}`].filter(Boolean).join(' · ') || 'Off'}</Text>
+          </>}
+        </Card>
+      </SimpleGrid>
+
+      {r.status === 'degraded' && (
+        <Alert color="orange" icon={<IconAlertTriangle />} mb="md" title="The remote is failing">
+          {r.health?.lastError} — cached artifacts are still served. Last success {timeAgo(r.health?.lastOk ?? 0)}.
+        </Alert>
+      )}
+      {r.offline && <Alert color="gray" icon={<IconPlayerPause />} mb="md">This repository is offline: clients receive “503 Service Unavailable”.</Alert>}
+
+      <Tabs value={tab} onChange={(t) => navigate(`/repositories/${name}/${t === 'browse' ? '' : t}`)} keepMounted={false}>
+        <Tabs.List mb="md">
+          <Tabs.Tab value="browse" leftSection={<IconFolderOpen size={16} />}>Browse</Tabs.Tab>
+          <Tabs.Tab value="components" leftSection={<IconPackage size={16} />}>Components</Tabs.Tab>
+          <Tabs.Tab value="setup" leftSection={<IconWand size={16} />}>Setup</Tabs.Tab>
+          {isAdmin && <Tabs.Tab value="access" leftSection={<IconKey size={16} />}>Access</Tabs.Tab>}
+          {isAdmin && <Tabs.Tab value="settings" leftSection={<IconInfoCircle size={16} />}>Configuration</Tabs.Tab>}
+        </Tabs.List>
+        <Tabs.Panel value="browse"><Browse repo={r} canWrite={canWrite} onChanged={repo.reload} /></Tabs.Panel>
+        <Tabs.Panel value="components"><Components repo={r} canWrite={canWrite} onChanged={repo.reload} /></Tabs.Panel>
+        <Tabs.Panel value="setup"><Setup repo={r} base={base} /></Tabs.Panel>
+        {isAdmin && <Tabs.Panel value="access"><AccessTab repo={r} /></Tabs.Panel>}
+        {isAdmin && <Tabs.Panel value="settings"><Configuration repo={r} onSaved={repo.reload} /></Tabs.Panel>}
+      </Tabs>
+    </>
+  )
+}
+
+// ---------- actions ----------
+
+function RepoActions({ repo, onChanged, onDeleted }: { repo: Repo; onChanged: () => void; onDeleted: () => void }) {
+  const { reloadRepos } = useAuth()
+  const [preview, setPreview] = useState<{ count: number; size: number; sample: Asset[] }>()
+  const [cleaning, setCleaning] = useState(false)
+  const run = (path: string, ok: string) => api(path, { method: 'POST' }).then(() => { notifyOk(ok); onChanged() }).catch(notifyError)
+
+  const testConnection = () => api<RemoteTest>('/repositories/test-remote', { body: repo })
+    .then((t) => { if (t.ok) notifyOk(`${t.message} (${t.latencyMs} ms)`); else notifyError(new Error(t.message)); onChanged() })
+    .catch(notifyError)
+  const previewCleanup = () => api<{ count: number; size: number; sample: Asset[] }>(`/repositories/${repo.name}/cleanup?dryRun=1`, { method: 'POST' }).then(setPreview).catch(notifyError)
+  const toggleOnline = () => api(`/repositories/${repo.name}`, { method: 'PUT', body: { ...repo, offline: !repo.offline } })
+    .then(() => { notifyOk(repo.offline ? 'Repository is back online' : 'Repository is now offline'); onChanged() }).catch(notifyError)
+
+  return (
+    <>
+      <Menu position="bottom-end" withArrow width={240}>
+        <Menu.Target><Button variant="default" rightSection={<IconDots size={16} />}>Actions</Button></Menu.Target>
+        <Menu.Dropdown>
+          {repo.type === 'proxy' && <>
+            <Menu.Label>Proxy</Menu.Label>
+            <Menu.Item leftSection={<IconPlugConnected size={16} />} onClick={testConnection}>Test remote connection</Menu.Item>
+            <Menu.Item leftSection={<IconRefresh size={16} />} onClick={() => run(`/repositories/${repo.name}/invalidate`, 'Cache invalidated — metadata will be re-fetched on next request')}>
+              Invalidate cache
+            </Menu.Item>
+          </>}
+          {repo.type === 'hosted' && ['apt', 'yum', 'npm'].includes(repo.format) && (
+            <Menu.Item leftSection={<IconBolt size={16} />} onClick={() => run(`/repositories/${repo.name}/reindex`, 'Index rebuilt')}>Rebuild index</Menu.Item>
+          )}
+          {(repo.cleanupDays > 0 || repo.retainVersions > 0) && (
+            <Menu.Item leftSection={<IconTrash size={16} />} onClick={previewCleanup}>Preview cleanup…</Menu.Item>
+          )}
+          <Menu.Label>Availability</Menu.Label>
+          <Menu.Item leftSection={repo.offline ? <IconPlayerPlay size={16} /> : <IconPlayerPause size={16} />} onClick={toggleOnline}>
+            {repo.offline ? 'Bring online' : 'Take offline'}
+          </Menu.Item>
+          <Menu.Divider />
+          <Menu.Item color="red" leftSection={<IconTrash size={16} />} onClick={() => confirmTyped({
+            title: `Delete ${repo.name}?`, name: repo.name, label: 'Delete repository',
+            body: <Text size="sm">This permanently deletes the repository, its configuration and all <b>{(repo.assetCount ?? 0).toLocaleString()}</b> artifacts ({formatBytes(repo.size)}). It is also removed from any groups. This can't be undone.</Text>,
+            onConfirm: () => api(`/repositories/${repo.name}`, { method: 'DELETE' }).then(() => { notifyOk('Repository deleted'); reloadRepos(); onDeleted() }),
+          })}>Delete repository…</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+
+      <Modal opened={!!preview} onClose={() => setPreview(undefined)} size="lg" title={<Text fw={600}>Cleanup preview</Text>}>
+        {preview && (preview.count === 0 ? (
+          <Text size="sm">Nothing matches the cleanup policy right now.</Text>
+        ) : (
+          <Stack>
+            <Text size="sm">The policy would delete <b>{preview.count.toLocaleString()}</b> artifacts, freeing up to <b>{formatBytes(preview.size)}</b>.</Text>
+            <Table striped fz="xs">
+              <Table.Tbody>
+                {preview.sample.map((a) => <Table.Tr key={a.id}><Table.Td ff="monospace" style={{ wordBreak: 'break-all' }}>{a.path}</Table.Td><Table.Td>{formatBytes(a.size)}</Table.Td><Table.Td>{timeAgo(Math.max(a.lastDownloaded, a.updatedAt))}</Table.Td></Table.Tr>)}
+              </Table.Tbody>
+            </Table>
+            {preview.count > preview.sample.length && <Text size="xs" c="dimmed">…and {preview.count - preview.sample.length} more.</Text>}
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setPreview(undefined)}>Cancel</Button>
+              <Button color="red" loading={cleaning} onClick={() => { setCleaning(true); api<{ deleted: number }>(`/repositories/${repo.name}/cleanup`, { method: 'POST' })
+                .then((res) => { notifyOk(`Deleted ${res.deleted} artifacts`); setPreview(undefined); onChanged() }).catch(notifyError).finally(() => setCleaning(false)) }}>
+                Delete {preview.count.toLocaleString()} artifacts
+              </Button>
+            </Group>
+          </Stack>
+        ))}
+      </Modal>
+    </>
+  )
+}
+
+// ---------- browse ----------
+
+function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; onChanged: () => void }) {
+  const [params, setParams] = useSearchParams()
+  const path = params.get('path') ?? ''
+  const selected = params.get('select')
+  const { data, loading, reload } = useApi<BrowseEntry[]>(`/repositories/${repo.name}/browse?path=${encodeURIComponent(path)}`)
+  const [uploading, setUploading] = useState(false)
+  const [filter, setFilter] = useState('')
+  const upload = formatInfo(repo.format).upload
+  const canUpload = canWrite && repo.type === 'hosted' && !!upload
+
+  const go = (p: string, select?: string) => setParams(select ? { path: p, select } : p ? { path: p } : {})
+  const parts = path ? path.split('/') : []
+  const asset = data?.find((e) => e.asset?.path === selected)?.asset
+  const rows = data?.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
+
+  return (
+    <Card padding={0}>
+      <Group justify="space-between" p="md" gap="sm">
+        <Breadcrumbs separatorMargin={6}>
+          <Anchor component="button" type="button" size="sm" onClick={() => go('')}>{repo.name}</Anchor>
+          {parts.map((p, i) => i === parts.length - 1
+            ? <Text size="sm" key={i} fw={500} aria-current="page">{p}</Text>
+            : <Anchor component="button" type="button" size="sm" key={i} onClick={() => go(parts.slice(0, i + 1).join('/'))}>{p}</Anchor>)}
+        </Breadcrumbs>
+        <Group gap="xs">
+          <TextInput size="xs" placeholder="Filter this folder" aria-label="Filter this folder" leftSection={<IconSearch size={14} />} value={filter} onChange={(e) => setFilter(e.currentTarget.value)} />
+          {canUpload && <Button size="xs" leftSection={<IconUpload size={14} />} onClick={() => setUploading(true)}>Upload</Button>}
+        </Group>
+      </Group>
+      <Table.ScrollContainer minWidth={600}>
+        <Table highlightOnHover verticalSpacing="xs" horizontalSpacing="md">
+          <Table.Thead>
+            <Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th>Updated</Table.Th><Table.Th ta="right">Downloads</Table.Th></Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {path && (
+              <Table.Tr className="row-link" tabIndex={0} aria-label="Up one folder" onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => go(parts.slice(0, -1).join('/'))}>
+                <Table.Td colSpan={4}><Group gap="xs"><IconArrowLeft size={16} /><Text size="sm">..</Text></Group></Table.Td>
+              </Table.Tr>
+            )}
+            {rows?.map((e) => (
+              <Table.Tr key={e.path + e.folder} className="row-link" tabIndex={0} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => (e.folder ? go(e.path) : go(path, e.path))}>
+                <Table.Td>
+                  <Group gap="xs" wrap="nowrap">
+                    {e.folder ? <IconFolder size={18} color="var(--mantine-color-yellow-6)" /> : <IconFile size={18} color="var(--mantine-color-dimmed)" />}
+                    <Text size="sm" fw={e.folder ? 500 : 400} style={{ wordBreak: 'break-all' }}>{e.name}</Text>
+                    {e.asset?.uploader === 'system' && <Tooltip label="Generated automatically"><Badge size="xs" variant="light" color="gray">index</Badge></Tooltip>}
+                  </Group>
+                </Table.Td>
+                <Table.Td ta="right"><Text size="sm" c="dimmed">{e.folder ? `${e.count} files · ${formatBytes(e.size)}` : formatBytes(e.asset!.size)}</Text></Table.Td>
+                <Table.Td><Text size="sm" c="dimmed">{e.asset && timeAgo(e.asset.updatedAt)}</Text></Table.Td>
+                <Table.Td ta="right"><Text size="sm" c="dimmed">{e.asset?.downloads}</Text></Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      {loading && !data && <Group justify="center" p="xl"><Loader size="sm" /></Group>}
+      {data?.length !== 0 && rows?.length === 0 && <EmptyState icon={<IconSearch />} title="Nothing in this folder matches your filter" />}
+      {data?.length === 0 && (
+        <EmptyState icon={<IconFolderOpen />} title={path ? 'This folder is empty' : 'This repository is empty'}
+          action={canUpload ? <Button onClick={() => setUploading(true)} leftSection={<IconUpload size={16} />}>Upload files</Button>
+            : <Button component={Link} to={`/repositories/${repo.name}/setup`} variant="light">Show setup instructions</Button>}>
+          {repo.type === 'proxy' ? 'Artifacts appear here as soon as a client requests them through this proxy.'
+            : repo.type === 'group' ? 'Groups show nothing themselves — browse their member repositories instead.'
+              : 'Publish with your usual tools (see Setup) or upload files directly.'}
+        </EmptyState>
+      )}
+
+      <AssetDrawer asset={asset} repo={repo} canWrite={canWrite} onClose={() => go(path)} onDeleted={() => { go(path); reload(); onChanged() }} />
+      {canUpload && <UploadModal opened={uploading} repo={repo} dir={path} onClose={() => setUploading(false)} onDone={() => { reload(); onChanged() }} />}
+    </Card>
+  )
+}
+
+function attrRows(attrs: Record<string, unknown>): [string, string][] {
+  const skip = new Set(['control', 'md5', 'sha1', 'headerStart', 'headerEnd', 'files', 'dirs', 'description'])
+  const label = (k: string) => k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())
+  return Object.entries(attrs).filter(([k, v]) => !skip.has(k) && v !== '' && v !== null && v !== 0).map(([k, v]) => {
+    if (Array.isArray(v)) {
+      const names = v.map((d) => (typeof d === 'object' && d ? (d as { name: string }).name : String(d)))
+      return [label(k), names.slice(0, 12).join(', ') + (names.length > 12 ? ` … (+${names.length - 12})` : '')]
+    }
+    return [label(k), k === 'buildtime' ? fullDate(Number(v)) : k === 'installedSize' || k === 'archiveSize' ? formatBytes(Number(v)) : String(v)]
+  })
+}
+
+function AssetDrawer({ asset, repo, canWrite, onClose, onDeleted }: { asset?: Asset; repo: Repo; canWrite: boolean; onClose: () => void; onDeleted: () => void }) {
+  const base = useBaseUrl()
+  const del = (a: Asset) => confirmAction({
+    title: 'Delete this artifact?', danger: true, label: 'Delete',
+    body: <Text size="sm" style={{ wordBreak: 'break-all' }}>{a.path}{['apt', 'yum', 'npm', 'conda'].includes(repo.format) && ' — the repository index is updated automatically.'}</Text>,
+    onConfirm: () => api(`/assets/${a.id}`, { method: 'DELETE' }).then(() => { notifyOk('Artifact deleted'); onDeleted() }).catch(notifyError),
+  })
+  const rows: [string, React.ReactNode][] = asset ? [
+    ['Path', <Text size="sm" ff="monospace" style={{ wordBreak: 'break-all' }}>{asset.path}</Text>],
+    ['Component', asset.component || '—'],
+    ['Version', asset.version || '—'],
+    ['Size', `${formatBytes(asset.size)} (${asset.size.toLocaleString()} bytes)`],
+    ['Content type', asset.contentType],
+    ['SHA-256', <Group gap={4} wrap="nowrap"><Text size="xs" ff="monospace" style={{ wordBreak: 'break-all' }}>{asset.sha256}</Text><Copy value={asset.sha256} /></Group>],
+    ['Uploaded by', asset.uploader === 'proxy' ? 'Cached from remote' : asset.uploader === 'system' ? 'Generated by RepoMan' : asset.uploader || '—'],
+    ['Created', fullDate(asset.createdAt)],
+    ['Updated', fullDate(asset.updatedAt)],
+    ['Downloads', asset.downloads.toLocaleString()],
+    ['Last downloaded', asset.lastDownloaded ? fullDate(asset.lastDownloaded) : 'never'],
+  ] : []
+  const pkg = asset?.attrs ? attrRows(asset.attrs) : []
+  const url = asset ? base + downloadUrl(asset, repo.format) : ''
+
+  return (
+    <Drawer opened={!!asset} onClose={onClose} position="right" size="lg" title={<Text fw={600}>{asset?.path.split('/').pop()}</Text>}>
+      {asset && (
+        <Stack>
+          <Group>
+            <Button component="a" href={downloadUrl(asset, repo.format)} target="_blank" leftSection={<IconDownload size={16} />}>Download</Button>
+            <Group gap={4}><Text size="sm" c="dimmed">Copy URL</Text><Copy value={url} label="Copy download URL" /></Group>
+            {canWrite && repo.type !== 'group' && <Button variant="light" color="red" leftSection={<IconTrash size={16} />} onClick={() => del(asset)}>Delete</Button>}
+          </Group>
+          <Table variant="vertical" layout="fixed" withTableBorder>
+            <Table.Tbody>
+              {rows.map(([k, v]) => <Table.Tr key={k}><Table.Th w={140}>{k}</Table.Th><Table.Td>{v}</Table.Td></Table.Tr>)}
+            </Table.Tbody>
+          </Table>
+          {pkg.length > 0 && <>
+            <Text fw={600} size="sm">Package metadata</Text>
+            <Table variant="vertical" layout="fixed" withTableBorder>
+              <Table.Tbody>
+                {pkg.map(([k, v]) => <Table.Tr key={k}><Table.Th w={140}>{k}</Table.Th><Table.Td style={{ wordBreak: 'break-word' }}>{v}</Table.Td></Table.Tr>)}
+              </Table.Tbody>
+            </Table>
+          </>}
+        </Stack>
+      )}
+    </Drawer>
+  )
+}
+
+function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; repo: Repo; dir: string; onClose: () => void; onDone: () => void }) {
+  const upload = formatInfo(repo.format).upload!
+  const [files, setFiles] = useState<File[]>([])
+  const [target, setTarget] = useState(dir)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (opened) { setTarget(dir); setFiles([]) } }, [opened, dir])
+
+  const submit = () => {
+    const fd = new FormData()
+    fd.set('path', target)
+    files.forEach((f) => fd.append('file', f))
+    setBusy(true)
+    api<{ uploaded: string[] }>(`/repositories/${repo.name}/upload`, { body: fd })
+      .then((r) => { notifyOk(`Uploaded ${r.uploaded.length} file(s)`); onClose(); onDone() })
+      .catch(notifyError)
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <Modal opened={opened} onClose={onClose} title={<Text fw={600}>Upload to {repo.name}</Text>} size="lg">
+      <Stack>
+        <Alert variant="light" icon={<IconInfoCircle />} py="xs">{upload.hint}</Alert>
+        {upload.dir && (
+          <TextInput label={upload.dir.label} placeholder={upload.dir.placeholder} description={upload.dir.description} value={target}
+            onChange={(e) => setTarget(e.currentTarget.value)} />
+        )}
+        <Dropzone onDrop={(f) => setFiles((cur) => [...cur, ...f])} multiple
+          validator={(f) => upload.accept && !upload.accept.some((ext) => f.name.endsWith(ext)) ? { code: 'type', message: `Only ${upload.accept.join(', ')} files` } : null}
+          onReject={(r) => notifyError(new Error(`${r.length} file(s) skipped: ${r[0]?.errors[0]?.message}`))}>
+          <Stack align="center" gap={4} py="lg" style={{ pointerEvents: 'none' }}>
+            <Dropzone.Accept><IconUpload size={40} color="var(--mantine-color-brand-6)" /></Dropzone.Accept>
+            <Dropzone.Reject><IconX size={40} color="var(--mantine-color-red-6)" /></Dropzone.Reject>
+            <Dropzone.Idle><IconUpload size={40} color="var(--mantine-color-dimmed)" /></Dropzone.Idle>
+            <Text fw={500}>Drag files here or click to choose</Text>
+            <Text size="sm" c="dimmed">{upload.accept ? `Accepted: ${upload.accept.join(', ')}` : 'Any file type'}</Text>
+          </Stack>
+        </Dropzone>
+        {files.length > 0 && (
+          <Stack gap={4}>
+            {files.map((f, i) => (
+              <Group key={i} justify="space-between" wrap="nowrap">
+                <Group gap="xs" wrap="nowrap"><IconFile size={16} /><Text size="sm" truncate="end">{f.name}</Text></Group>
+                <Group gap="xs" wrap="nowrap"><Text size="xs" c="dimmed">{formatBytes(f.size)}</Text>
+                  <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setFiles(files.filter((_, j) => j !== i))} aria-label="Remove file"><IconX size={14} /></ActionIcon></Group>
+              </Group>
+            ))}
+          </Stack>
+        )}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} loading={busy} disabled={!files.length}>Upload {files.length || ''} file{files.length === 1 ? '' : 's'}</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+}
+
+// ---------- components ----------
+
+function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; onChanged: () => void }) {
+  const [q, setQ] = useState('')
+  const [dq] = useDebouncedValue(q, 250)
+  const [open, setOpen] = useState<string>()
+  const { data, loading, reload } = useApi<Component[]>(repo.type === 'group' ? null : `/repositories/${repo.name}/components?q=${encodeURIComponent(dq)}`)
+  const del = (c: string, v?: string) => confirmAction({
+    title: v ? `Delete ${c} ${v}?` : `Delete all versions of ${c}?`, danger: true, label: 'Delete',
+    body: v ? 'All files of this version are removed.' : 'Every version and file of this component is removed.',
+    onConfirm: () => api<{ deleted: number }>(`/repositories/${repo.name}/components?component=${encodeURIComponent(c)}${v ? `&version=${encodeURIComponent(v)}` : ''}`, { method: 'DELETE' })
+      .then((r) => { notifyOk(`Deleted ${r.deleted} files`); reload(); onChanged() }).catch(notifyError),
+  })
+
+  if (repo.type === 'group') return (
+    <EmptyState icon={<IconPackage />} title="Groups don't store components">Open a member repository to see its components: {repo.members?.join(', ')}.</EmptyState>
+  )
+  return (
+    <Card padding={0}>
+      <Group p="md" justify="space-between">
+        <Text size="sm" c="dimmed">Packages, artifacts and images grouped by name and version.</Text>
+        <TextInput size="xs" placeholder="Filter components" aria-label="Filter components" leftSection={<IconSearch size={14} />} value={q} onChange={(e) => setQ(e.currentTarget.value)} />
+      </Group>
+      <Table.ScrollContainer minWidth={700}>
+        <Table verticalSpacing="xs" horizontalSpacing="md" highlightOnHover>
+          <Table.Thead>
+            <Table.Tr><Table.Th w={30} /><Table.Th>Component</Table.Th><Table.Th>Latest</Table.Th><Table.Th ta="right">Versions</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th ta="right">Downloads</Table.Th><Table.Th>Updated</Table.Th><Table.Th /></Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {data?.map((c) => (
+              <Fragment key={c.name}>
+                <Table.Tr className="row-link" tabIndex={0} aria-expanded={c.versions.length > 0 ? open === c.name : undefined} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => setOpen(open === c.name ? undefined : c.name)}>
+                  <Table.Td>{c.versions.length > 0 && (open === c.name ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />)}</Table.Td>
+                  <Table.Td><Text size="sm" fw={500} style={{ wordBreak: 'break-all' }}>{c.name}</Text></Table.Td>
+                  <Table.Td>{c.versions[0] ? <Badge variant="light" radius="sm">{c.versions[0].version}</Badge> : '—'}</Table.Td>
+                  <Table.Td ta="right">{c.versions.length}</Table.Td>
+                  <Table.Td ta="right">{formatBytes(c.size)}</Table.Td>
+                  <Table.Td ta="right">{c.downloads.toLocaleString()}</Table.Td>
+                  <Table.Td><Text size="sm" c="dimmed">{timeAgo(c.updatedAt)}</Text></Table.Td>
+                  <Table.Td onClick={(e) => e.stopPropagation()}>
+                    {canWrite && <Tooltip label="Delete component"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name)} aria-label="Delete component"><IconTrash size={16} /></ActionIcon></Tooltip>}
+                  </Table.Td>
+                </Table.Tr>
+                {open === c.name && c.versions.map((v) => (
+                  <Table.Tr key={v.version} bg="var(--mantine-color-default-hover)">
+                    <Table.Td />
+                    <Table.Td colSpan={2}><Group gap="xs"><Text size="sm" ff="monospace">{v.version}</Text><Text size="xs" c="dimmed">{v.assets} files</Text></Group></Table.Td>
+                    <Table.Td />
+                    <Table.Td ta="right">{formatBytes(v.size)}</Table.Td>
+                    <Table.Td ta="right">{v.downloads.toLocaleString()}</Table.Td>
+                    <Table.Td><Text size="sm" c="dimmed">{timeAgo(v.updatedAt)}</Text></Table.Td>
+                    <Table.Td>{canWrite && <Tooltip label="Delete version"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name, v.version)} aria-label="Delete version"><IconTrash size={16} /></ActionIcon></Tooltip>}</Table.Td>
+                  </Table.Tr>
+                ))}
+              </Fragment>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      {loading && !data && <Group justify="center" p="xl"><Loader size="sm" /></Group>}
+      {data?.length === 0 && <EmptyState icon={<IconPackage />} title={q ? 'No matching components' : 'No components yet'}>
+        {repo.format === 'raw' ? 'Raw repositories store plain files — use the Browse tab.' : 'Components appear once packages are published or cached.'}
+      </EmptyState>}
+    </Card>
+  )
+}
+
+// ---------- setup ----------
+
+function Setup({ repo, base }: { repo: Repo; base: string }) {
+  const { user } = useAuth()
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const guides = useMemo(() => clientGuides(base, repo, user.username, token || '<YOUR_API_TOKEN>'), [base, repo, user.username, token])
+  const [tab, setTab] = useState<string | null>(null)
+  const active = guides.find((g) => g.id === tab) ?? guides[0]
+
+  const generate = () => {
+    setBusy(true)
+    api<{ token: string }>('/tokens', { body: { name: `${repo.name} setup`, scope: repo.type === 'hosted' ? 'write' : 'read', expiresDays: 365 } })
+      .then((r) => { setToken(r.token); notifyOk('Token created and filled into the snippets below. Copy them now — the token is not shown again.', 'API token created') })
+      .catch(notifyError).finally(() => setBusy(false))
+  }
+
+  return (
+    <Stack maw={920}>
+      <Card padding="md">
+        <Group justify="space-between" wrap="nowrap" gap="md">
+          <Group gap="sm" wrap="nowrap">
+            <ThemeIcon variant="light" size="lg"><IconKey size={18} /></ThemeIcon>
+            <div>
+              <Text fw={600} size="sm">{token ? 'Snippets are personalized with a new token' : 'Personalize these snippets'}</Text>
+              <Text size="xs" c="dimmed">{token
+                ? 'This token expires in a year and can be revoked under Account & tokens.'
+                : <>Snippets use your username <b>{user.username}</b>. Generate an API token to fill in the password too.</>}</Text>
+            </div>
+          </Group>
+          {!token && <Button size="xs" variant="light" onClick={generate} loading={busy}>Generate token</Button>}
+        </Group>
+      </Card>
+      {repo.type !== 'hosted' && (
+        <Alert variant="light" icon={<IconInfoCircle />} py="xs">
+          {repo.type === 'group' ? 'Groups are read-only: publish to a hosted member and consume through this group.' : 'Proxy repositories are read-only and fill their cache on first request.'}
+        </Alert>
+      )}
+      <Tabs value={active.id} onChange={setTab} variant="pills">
+        <Tabs.List>{guides.map((g) => <Tabs.Tab key={g.id} value={g.id}>{g.label}</Tabs.Tab>)}</Tabs.List>
+      </Tabs>
+      {active.steps.map((s, i) => (
+        <Card key={active.id + i} padding="md">
+          <Group justify="space-between" mb="xs" wrap="nowrap" align="flex-start">
+            <Group gap="sm" wrap="nowrap" align="flex-start">
+              <Badge circle size="lg" variant="light">{i + 1}</Badge>
+              <div>
+                <Text fw={600} size="sm">{s.title}</Text>
+                {s.file && <Text size="xs" c="dimmed" ff="monospace">{s.file}</Text>}
+                {s.description && <Text size="xs" c="dimmed" mt={2}>{s.description}</Text>}
+              </div>
+            </Group>
+            <Copy value={s.code} />
+          </Group>
+          <Code block className="snippet">{s.code}</Code>
+        </Card>
+      ))}
+    </Stack>
+  )
+}
+
+// ---------- access ----------
+
+const levelOptions = [
+  { value: 'inherit', label: 'Inherit from role' },
+  { value: 'none', label: 'No access' },
+  { value: 'read', label: 'Read' },
+  { value: 'write', label: 'Read & write' },
+]
+const roleDefault: Record<string, string> = { admin: 'Read & write (admin)', developer: 'Read & write', viewer: 'Read' }
+
+function AccessTab({ repo }: { repo: Repo }) {
+  const { settings } = useAuth()
+  const users = useApi<User[]>('/users')
+  const perms = useApi<Permission[]>(`/repositories/${repo.name}/permissions`)
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (perms.data) setDraft(Object.fromEntries(perms.data.map((p) => [p.username, p.level]))) }, [perms.data])
+
+  const save = () => {
+    setBusy(true)
+    const body = Object.entries(draft).filter(([, l]) => l !== 'inherit').map(([username, level]) => ({ username, level: level as Access }))
+    api(`/repositories/${repo.name}/permissions`, { method: 'PUT', body }).then(() => { notifyOk('Access saved'); perms.reload() }).catch(notifyError).finally(() => setBusy(false))
+  }
+  const anonymous = settings?.anonymousAccess && !repo.private
+
+  return (
+    <Stack maw={920}>
+      <Alert variant="light" icon={<IconInfoCircle />}>
+        By default everyone gets access from their role: <b>viewers</b> can read, <b>developers</b> can also publish and delete,
+        and <b>admins</b> can do everything. Override that for individual users here — for example, let a viewer publish to
+        just this repository, or hide it from someone entirely.
+      </Alert>
+      <Card padding="md">
+        <Group gap="sm" wrap="nowrap">
+          <ThemeIcon variant="light" color={anonymous ? 'orange' : 'teal'}>{anonymous ? <IconAlertTriangle size={18} /> : <IconLock size={18} />}</ThemeIcon>
+          <Text size="sm">{anonymous ? <>Anonymous users <b>can read</b> this repository (server-wide anonymous access is on). Mark it private in Configuration to require sign-in.</>
+            : <>Anonymous users <b>cannot</b> read this repository.</>}</Text>
+        </Group>
+      </Card>
+      <Card padding={0}>
+        <Table verticalSpacing="sm" horizontalSpacing="md">
+          <Table.Thead><Table.Tr><Table.Th>User</Table.Th><Table.Th>From role</Table.Th><Table.Th w={220}>Access to {repo.name}</Table.Th></Table.Tr></Table.Thead>
+          <Table.Tbody>
+            {users.data?.map((u) => (
+              <Table.Tr key={u.username}>
+                <Table.Td><Text size="sm" fw={500} span>{u.username}</Text>{u.disabled && <Badge size="xs" color="gray" ml="xs">disabled</Badge>}</Table.Td>
+                <Table.Td><Text size="sm" c="dimmed">{roleDefault[u.role]}</Text></Table.Td>
+                <Table.Td>
+                  {u.role === 'admin' ? <Text size="sm" c="dimmed">Always full access</Text> : (
+                    <Select size="xs" data={levelOptions} value={draft[u.username] ?? 'inherit'} allowDeselect={false}
+                      onChange={(v) => setDraft({ ...draft, [u.username]: v ?? 'inherit' })} aria-label={`Access for ${u.username}`} />
+                  )}
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Card>
+      <Group justify="flex-end"><Button onClick={save} loading={busy}>Save access</Button></Group>
+    </Stack>
+  )
+}
+
+// ---------- configuration ----------
+
+function Configuration({ repo, onSaved }: { repo: Repo; onSaved: () => void }) {
+  const repos = useApi<Repo[]>('/repositories')
+  const [r, setR] = useState<Repo>(repo)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => setR(repo), [repo])
+  const dirty = JSON.stringify(r) !== JSON.stringify(repo)
+  const save = () => {
+    setBusy(true)
+    api<Repo>(`/repositories/${repo.name}`, { method: 'PUT', body: r })
+      .then(() => { notifyOk('Configuration saved'); onSaved() }).catch(notifyError).finally(() => setBusy(false))
+  }
+  return (
+    <Stack maw={820}>
+      <RepoSettingsFields repo={r} set={(p) => setR((cur) => ({ ...cur, ...p }))} repos={repos.data ?? []} editing />
+      <Card padding="sm" pos="sticky" bottom={16} shadow="md" style={{ zIndex: 2 }}>
+        <Group justify="space-between">
+          <Text size="sm" c="dimmed">{dirty ? 'You have unsaved changes.' : 'All changes saved.'}</Text>
+          <Group gap="xs">
+            {dirty && <Button variant="default" onClick={() => setR(repo)}>Discard</Button>}
+            <Button onClick={save} loading={busy} disabled={!dirty}>Save changes</Button>
+          </Group>
+        </Group>
+      </Card>
+    </Stack>
+  )
+}

@@ -1,0 +1,10 @@
+# Normalise line endings: LF in the repository and in every checkout, so shell scripts
+# and service files copied from a Windows clone still work on Linux and macOS.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.bz2 binary
+*.conda binary

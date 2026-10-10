@@ -1,0 +1,18 @@
+# Keep the build context small and, more importantly, keep local data and secrets out of images.
+.git
+.github
+.claude
+dist
+docs
+deploy
+**/node_modules
+backend/data
+backend/ui/dist
+backend/repoman
+backend/repoman.exe
+**/*.db
+**/*.db-*
+**/repoman.env
+**/.env
+**/*.pem
+**/*.key
