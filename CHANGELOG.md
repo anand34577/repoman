@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0]
+
+Makes the web UI usable with hundreds of thousands of artifacts.
+
 ### Added
 
 - Pagination everywhere a list can grow large: search, the audit log, folder browsing and components are paged
