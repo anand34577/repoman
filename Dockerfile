@@ -3,7 +3,7 @@
 # Both build stages run on the build machine's own architecture and cross-compile, so multi-arch
 # images (amd64, arm64, arm/v7) need no emulation.
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:25-alpine AS ui
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
