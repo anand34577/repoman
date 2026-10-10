@@ -1,11 +1,12 @@
 import {
-  ActionIcon, Alert, Badge, Button, Card, Group, Stack, Text, TextInput, ThemeIcon, Title, Tooltip,
+  ActionIcon, Alert, Badge, Button, Card, Group, Pagination, Select, Stack, Text, TextInput, ThemeIcon, Title, Tooltip,
 } from '@mantine/core'
 import { useDocumentTitle } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import { IconAlertCircle, IconCheck, IconCopy, IconInfoCircle, IconRefresh } from '@tabler/icons-react'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import type { Format, Repo, RepoType } from './api'
 import { formatInfo, FormatIcon } from './formats'
 
@@ -105,6 +106,51 @@ export function PageHeader({ title, description, action, eyebrow }: { title: str
         {description && <Text c="dimmed" size="sm" maw={720} mt={4}>{description}</Text>}
       </div>
       {action}
+    </Group>
+  )
+}
+
+/** Server counts stop here (see maxCount in the backend); past it the UI says "10,000+". */
+export const MAX_COUNT = 10000
+const PAGE_SIZES = [25, 50, 100, 250]
+
+/** Page and page size live in the URL (?page=&size=), so a page can be shared, reloaded and reached with Back. */
+export function usePaging(defaultSize = 50) {
+  const [params, setParams] = useSearchParams()
+  const page = Math.max(1, Number(params.get('page')) || 1)
+  const size = PAGE_SIZES.includes(Number(params.get('size'))) ? Number(params.get('size')) : defaultSize
+  return {
+    page, size, offset: (page - 1) * size,
+    query: `offset=${(page - 1) * size}&limit=${size}`,
+    setPage: (n: number, replace = false) => n !== page && setParams((p) => { if (n > 1) p.set('page', String(n)); else p.delete('page'); return p }, { replace }),
+    setSize: (n: number) => setParams((p) => { p.set('size', String(n)); p.delete('page'); return p }, { replace: true }),
+  }
+}
+
+/** "1–50 of 12,345", a page-size picker and page buttons, under a paged table. */
+export function Pager({ paging, total, noun = 'items' }: { paging: ReturnType<typeof usePaging>; total?: number; noun?: string }) {
+  const { page, size, setPage, setSize } = paging
+  const pages = Math.max(1, Math.ceil(Math.min(total ?? 0, MAX_COUNT) / size))
+  // filters or deletions can leave the URL past the last page
+  useEffect(() => { if (total !== undefined && page > pages) setPage(pages, true) }, [total, page, pages])
+  if (!total) return null
+  const capped = total > MAX_COUNT
+  const from = Math.min((page - 1) * size + 1, total)
+  return (
+    <Group justify="space-between" px="md" py="sm" gap="sm" className="pager">
+      <Text size="sm" c="dimmed">
+        {from.toLocaleString()}–{Math.min(page * size, total).toLocaleString()} of {capped ? `${MAX_COUNT.toLocaleString()}+` : total.toLocaleString()} {noun}
+        {capped && page === pages && ' — refine your filters to see the rest'}
+      </Text>
+      <Group gap="sm">
+        <Select size="xs" w={120} aria-label="Rows per page" allowDeselect={false} value={String(size)} onChange={(v) => setSize(Number(v))}
+          data={PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} per page` }))} comboboxProps={{ withinPortal: true }} />
+        {pages > 1 && (
+          <Pagination size="sm" total={pages} value={page} siblings={1} boundaries={1} withEdges={pages > 7}
+            onChange={(n) => { setPage(n); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+            getControlProps={(c) => ({ 'aria-label': `${c} page` })} getItemProps={(n) => ({ 'aria-label': `Page ${n}` })} />
+        )}
+      </Group>
     </Group>
   )
 }

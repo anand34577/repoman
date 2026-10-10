@@ -1,9 +1,10 @@
-import { Badge, Button, Card, Group, SegmentedControl, Table, Text, TextInput, Tooltip } from '@mantine/core'
+import { Badge, Button, Card, Group, SegmentedControl, Skeleton, Table, Text, TextInput, Tooltip } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
 import { IconActivity, IconDownload, IconSearch } from '@tabler/icons-react'
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useApi, type AuditEvent } from '../api'
-import { EmptyState, fullDate, LoadError, PageHeader, timeAgo } from '../util'
+import { EmptyState, fullDate, LoadError, PageHeader, Pager, timeAgo, usePaging } from '../util'
 
 const actionColor = (a: string) =>
   a.includes('failed') ? 'red' : a.includes('delete') ? 'orange' : /create|publish|push|upload/.test(a) ? 'teal' : a.startsWith('login') ? 'blue' : 'gray'
@@ -14,35 +15,36 @@ const categories = [
 ]
 
 export default function AuditLog() {
-  const [q, setQ] = useState('')
-  const [cat, setCat] = useState('')
+  const [params, setParams] = useSearchParams()
+  const cat = params.get('action') ?? ''
+  const [q, setQ] = useState(params.get('q') ?? '')
   const [dq] = useDebouncedValue(q, 250)
-  const { data, loading, error, reload } = useApi<AuditEvent[]>(`/audit?q=${encodeURIComponent(dq)}&action=${cat}`)
+  const paging = usePaging()
+  const set = (key: string, value: string) => setParams((p) => {
+    if (value) p.set(key, value); else p.delete(key)
+    p.delete('page')
+    return p
+  }, { replace: true })
 
-  const exportCsv = () => {
-    const csv = ['time,user,action,target,detail', ...(data ?? []).map((e) =>
-      [new Date(e.ts * 1000).toISOString(), e.username, e.action, e.target, e.detail].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `repoman-audit-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }
+  const filter = new URLSearchParams({ q: dq, action: cat })
+  const { data, total, loading, error, reload } = useApi<AuditEvent[]>(`/audit?${filter}&${paging.query}`)
 
   return (
     <>
-      <PageHeader title="Audit log" description="Who did what, and when. The latest 1,000 matching events are shown."
-        action={<Button variant="default" leftSection={<IconDownload size={16} />} onClick={exportCsv} disabled={!data?.length}>Export CSV</Button>} />
+      <PageHeader title="Audit log" description="Who did what, and when. Newest first; the export contains every matching event."
+        action={<Button component="a" href={`/api/audit/export?${filter}`} download variant="default" leftSection={<IconDownload size={16} />}
+          data-disabled={!total || undefined} onClick={(e) => !total && e.preventDefault()}>Export CSV</Button>} />
       <Group mb="md" justify="space-between">
-        <SegmentedControl value={cat} onChange={setCat} data={categories} aria-label="Event category" />
-        <TextInput placeholder="Search user, action or target" leftSection={<IconSearch size={16} />} value={q} onChange={(e) => setQ(e.currentTarget.value)} w={{ base: '100%', sm: 300 }} aria-label="Search audit events" />
+        <SegmentedControl value={cat} onChange={(v) => set('action', v)} data={categories} aria-label="Event category" />
+        <TextInput placeholder="Search user, action or target" leftSection={<IconSearch size={16} />} value={q} onChange={(e) => { setQ(e.currentTarget.value); set('q', e.currentTarget.value) }} w={{ base: '100%', sm: 300 }} aria-label="Search audit events" />
       </Group>
       <LoadError error={error} retry={reload} />
       <Card padding={0}>
         <Table.ScrollContainer minWidth={760}>
-          <Table verticalSpacing="xs" horizontalSpacing="md" striped highlightOnHover>
+          <Table verticalSpacing="xs" horizontalSpacing="md" striped highlightOnHover style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
             <Table.Thead><Table.Tr><Table.Th w={140}>When</Table.Th><Table.Th>User</Table.Th><Table.Th>Action</Table.Th><Table.Th>Target</Table.Th><Table.Th>Detail</Table.Th></Table.Tr></Table.Thead>
             <Table.Tbody>
+              {!data && loading && Array.from({ length: 8 }, (_, i) => <Table.Tr key={i}><Table.Td colSpan={5}><Skeleton h={18} /></Table.Td></Table.Tr>)}
               {data?.map((e) => (
                 <Table.Tr key={e.id}>
                   <Table.Td><Tooltip label={fullDate(e.ts)}><Text size="sm" c="dimmed">{timeAgo(e.ts)}</Text></Tooltip></Table.Td>
@@ -55,7 +57,8 @@ export default function AuditLog() {
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
-        {!loading && data?.length === 0 && <EmptyState icon={<IconActivity />} title="No matching events" />}
+        {!loading && data?.length === 0 && !total && <EmptyState icon={<IconActivity />} title="No matching events" />}
+        <Pager paging={paging} total={total} noun="events" />
       </Card>
     </>
   )

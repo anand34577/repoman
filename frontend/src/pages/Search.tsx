@@ -5,8 +5,13 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useApi, type Asset, type Repo } from '../api'
 import { FORMATS } from '../formats'
-import { EmptyState, formatBytes, FormatBadge, LoadError, PageHeader, timeAgo } from '../util'
+import { EmptyState, formatBytes, FormatBadge, LoadError, MAX_COUNT, PageHeader, Pager, timeAgo, usePaging } from '../util'
 import { assetLink } from '../links'
+
+const sorts = [
+  { value: 'updated', label: 'Recently updated' }, { value: 'name', label: 'Name' },
+  { value: 'downloads', label: 'Most downloaded' }, { value: 'size', label: 'Largest' },
+]
 
 export default function Search() {
   // the URL is the source of truth so results can be shared and the header search works from this page too
@@ -14,17 +19,21 @@ export default function Search() {
   const urlQ = params.get('q') ?? ''
   const repo = params.get('repo')
   const format = params.get('format')
+  const sort = params.get('sort') ?? 'updated'
+  const paging = usePaging()
   const [q, setQ] = useState(urlQ)
   useEffect(() => setQ(urlQ), [urlQ])
   const [dq] = useDebouncedValue(q, 250)
+  // any filter change starts again at page 1
   const update = (key: string, value: string | null) => setParams((p) => {
     if (value) p.set(key, value); else p.delete(key)
+    p.delete('page')
     return p
   }, { replace: true })
 
   const repos = useApi<Repo[]>('/repositories')
-  const qs = new URLSearchParams({ q: dq, repo: repo ?? '', format: format ?? '' })
-  const { data, loading, error, reload } = useApi<Asset[]>(`/search?${qs}`)
+  const qs = new URLSearchParams({ q: dq, repo: repo ?? '', format: format ?? '', sort })
+  const { data, total, loading, error, reload } = useApi<Asset[]>(`/search?${qs}&${paging.query}`)
   const formatOf = Object.fromEntries((repos.data ?? []).map((r) => [r.name, r.format]))
 
   return (
@@ -37,12 +46,19 @@ export default function Search() {
         <Select placeholder="All formats" aria-label="Filter by format" clearable value={format} onChange={(v) => update('format', v)}
           data={FORMATS.map((f) => ({ value: f.id, label: f.label }))} w={{ base: '100%', xs: 160 }} />
         <Select placeholder="All repositories" aria-label="Filter by repository" clearable searchable value={repo} onChange={(v) => update('repo', v)}
-          data={repos.data?.map((r) => r.name) ?? []} w={{ base: '100%', xs: 220 }} />
+          data={repos.data?.map((r) => r.name) ?? []} w={{ base: '100%', xs: 220 }} limit={100} nothingFoundMessage="No repository" />
+        <Select aria-label="Sort results" value={sort} allowDeselect={false} onChange={(v) => update('sort', v === 'updated' ? null : v)}
+          data={sorts} w={{ base: '100%', xs: 180 }} />
       </Group>
       <LoadError error={error} retry={reload} />
+      {total !== undefined && total > 0 && (
+        <Text size="sm" c="dimmed" mb="xs" aria-live="polite">
+          {total > MAX_COUNT ? `More than ${MAX_COUNT.toLocaleString()}` : total.toLocaleString()} artifact{total === 1 ? '' : 's'} found
+        </Text>
+      )}
       <Card padding={0}>
         <Table.ScrollContainer minWidth={760}>
-          <Table highlightOnHover horizontalSpacing="md">
+          <Table highlightOnHover horizontalSpacing="md" style={{ opacity: loading && data ? 0.6 : 1, transition: 'opacity 150ms' }} aria-busy={loading}>
             <Table.Thead>
               <Table.Tr><Table.Th>Component</Table.Th><Table.Th>Version</Table.Th><Table.Th>Path</Table.Th><Table.Th>Repository</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th>Updated</Table.Th></Table.Tr>
             </Table.Thead>
@@ -66,12 +82,12 @@ export default function Search() {
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
-        {!loading && data?.length === 0 && (
+        {!loading && data?.length === 0 && !total && (
           <EmptyState icon={<IconSearchOff />} title="No artifacts found">
             {q || repo || format ? 'Try a shorter search term or clear the filters.' : 'Nothing has been published or cached yet.'}
           </EmptyState>
         )}
-        {data?.length === 500 && <Text c="dimmed" size="xs" ta="center" py="md">Showing the first 500 results — refine your search.</Text>}
+        <Pager paging={paging} total={total} noun="artifacts" />
       </Card>
     </>
   )

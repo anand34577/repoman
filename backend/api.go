@@ -1,16 +1,17 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func jsonString(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -26,6 +27,29 @@ func anySlice(s []string) []any {
 	return out
 }
 
+// pageParams reads ?offset= and ?limit= for list endpoints; limit defaults to def and is capped at 1000.
+func pageParams(r *http.Request, def int) (limit, offset int) {
+	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = def
+	}
+	return min(limit, 1000), max(offset, 0)
+}
+
+func setTotal(w http.ResponseWriter, n int) { w.Header().Set("X-Total-Count", strconv.Itoa(n)) }
+
+// maxCount caps match counts so totals stay cheap on tables with millions of rows; clients show "10,000+".
+const maxCount = 10000
+
+// setCappedTotal counts the rows of a "FROM … WHERE …" clause, stopping at maxCount+1.
+func (a *App) setCappedTotal(w http.ResponseWriter, from string, args ...any) error {
+	var n int
+	err := a.db.QueryRow(`SELECT COUNT(*) FROM (SELECT 1 `+from+` LIMIT `+strconv.Itoa(maxCount+1)+`)`, args...).Scan(&n)
+	setTotal(w, n)
+	return err
+}
+
 // ---------- repositories ----------
 
 type repoView struct {
@@ -39,6 +63,11 @@ type repoView struct {
 }
 
 var repoNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+var (
+	distributionRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
+	goUploadRe     = regexp.MustCompile(`/@v/v[^/]+\.(zip|mod|info)$`)
+)
 
 func redact(r *Repo) *Repo {
 	c := *r
@@ -126,7 +155,7 @@ func (a *App) validateRepo(r *Repo) error {
 			if r.Distribution == "" {
 				r.Distribution = "stable"
 			}
-			if !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`).MatchString(r.Distribution) {
+			if !distributionRe.MatchString(r.Distribution) {
 				return httpErr{400, "distribution must be lowercase, e.g. stable or bookworm"}
 			}
 		}
@@ -273,7 +302,8 @@ type browseEntry struct {
 	Asset  *Asset `json:"asset,omitempty"`
 }
 
-// ponytail: lists every asset under the prefix and folds in Go; fine to ~100k assets per folder
+// browseAPI lists one folder: subfolders first, then files, each by name. Folders are folded in SQL, so a
+// folder holding a million artifacts returns one page without loading them; ?q= filters names, ?offset=/?limit= page.
 func (a *App) browseAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	repo, err := a.repoFor(r, u, false)
 	if err != nil {
@@ -283,34 +313,55 @@ func (a *App) browseAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	if prefix != "" {
 		prefix += "/"
 	}
-	list, err := a.assetsUnder(repo.Name, prefix)
+	filter := strings.ToLower(r.URL.Query().Get("q"))
+	limit, offset := pageParams(r, 1000)
+	under, uargs := prefixWhere(prefix)
+	start := utf8.RuneCountInString(prefix) + 1 // substr counts characters, not bytes
+	rows, err := a.db.Query(`SELECT substr(rest, 1, instr(rest, '/')-1) AS dir, COUNT(*), SUM(size)
+		FROM (SELECT substr(path, ?) AS rest, size FROM assets WHERE repo=?`+under+`)
+		WHERE instr(rest, '/') > 0 GROUP BY dir ORDER BY dir`, append([]any{start, repo.Name}, uargs...)...)
 	if err != nil {
 		return nil, err
 	}
-	folders := map[string]*browseEntry{}
-	out := []*browseEntry{}
-	for _, x := range list {
-		rest := x.Path[len(prefix):]
-		if dir, _, ok := strings.Cut(rest, "/"); ok {
-			e := folders[dir]
-			if e == nil {
-				e = &browseEntry{Name: dir, Path: prefix + dir, Folder: true}
-				folders[dir] = e
-				out = append(out, e)
-			}
-			e.Count++
-			e.Size += x.Size
-		} else {
-			out = append(out, &browseEntry{Name: rest, Path: x.Path, Asset: x})
+	folders := []*browseEntry{}
+	for rows.Next() {
+		e := &browseEntry{Folder: true}
+		rows.Scan(&e.Name, &e.Count, &e.Size)
+		if strings.Contains(strings.ToLower(e.Name), filter) {
+			e.Path = prefix + e.Name
+			folders = append(folders, e)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Folder != out[j].Folder {
-			return out[i].Folder
+	rows.Close()
+
+	files := `WHERE repo=?` + under + ` AND instr(substr(path, ?), '/')=0 AND substr(path, ?) LIKE ? ESCAPE '\'`
+	fargs := append(append([]any{repo.Name}, uargs...), start, start, "%"+likeEscape(filter)+"%")
+	var nfiles int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM assets a `+files, fargs...).Scan(&nfiles); err != nil {
+		return nil, err
+	}
+	setTotal(w, len(folders)+nfiles)
+
+	out := folders[min(offset, len(folders)):min(offset+limit, len(folders))]
+	if room := limit - len(out); room > 0 {
+		list, err := a.queryAssets(files+` ORDER BY path LIMIT ? OFFSET ?`, append(fargs, room, max(0, offset-len(folders)))...)
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
+		for _, x := range list {
+			out = append(out, &browseEntry{Name: x.Path[len(prefix):], Path: x.Path, Asset: x})
+		}
+	}
 	return out, nil
+}
+
+// assetAPI returns one artifact by path, for deep links into folders too large for one page.
+func (a *App) assetAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
+	repo, err := a.repoFor(r, u, false)
+	if err != nil {
+		return nil, err
+	}
+	return a.findAsset(repo.Name, r.URL.Query().Get("path"))
 }
 
 type versionView struct {
@@ -330,39 +381,61 @@ type componentView struct {
 	UpdatedAt int64         `json:"updatedAt"`
 }
 
-// componentsAPI groups a repository's assets by component and version.
+var componentSort = map[string]string{
+	"name": "component", "updated": "MAX(updated_at) DESC", "downloads": "SUM(downloads) DESC", "size": "SUM(size) DESC",
+}
+
+// componentsAPI groups a repository's assets by component and version, one page of components at a time.
 func (a *App) componentsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	repo, err := a.repoFor(r, u, false)
 	if err != nil {
 		return nil, err
 	}
-	q := "%" + likeEscape(r.URL.Query().Get("q")) + "%"
-	rows, err := a.db.Query(`SELECT component, version, COUNT(*), SUM(size), SUM(downloads), MAX(updated_at) FROM assets
-		WHERE repo=? AND component!='' AND uploader!='system' AND component LIKE ? ESCAPE '\'
-		GROUP BY component, version ORDER BY component, MAX(created_at) DESC`, repo.Name, q)
+	limit, offset := pageParams(r, 1000)
+	order := componentSort[r.URL.Query().Get("sort")]
+	if order == "" {
+		order = "component"
+	}
+	where := `WHERE repo=? AND component!='' AND uploader!='system' AND component LIKE ? ESCAPE '\'`
+	args := []any{repo.Name, "%" + likeEscape(r.URL.Query().Get("q")) + "%"}
+	var total int
+	if err := a.db.QueryRow(`SELECT COUNT(DISTINCT component) FROM assets `+where, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	setTotal(w, total)
+	rows, err := a.db.Query(`SELECT component, COUNT(*), SUM(size), SUM(downloads), MAX(updated_at) FROM assets `+where+`
+		GROUP BY component ORDER BY `+order+`, component LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		return nil, err
+	}
+	out := []*componentView{}
+	byName := map[string]*componentView{}
+	names := []any{}
+	for rows.Next() {
+		c := &componentView{Versions: []versionView{}}
+		rows.Scan(&c.Name, &c.Assets, &c.Size, &c.Downloads, &c.UpdatedAt)
+		out = append(out, c)
+		byName[c.Name] = c
+		names = append(names, c.Name)
+	}
+	rows.Close()
+	if len(out) == 0 {
+		return out, nil
+	}
+	rows, err = a.db.Query(`SELECT component, version, COUNT(*), SUM(size), SUM(downloads), MAX(updated_at) FROM assets
+		WHERE repo=? AND uploader!='system' AND version!='' AND component IN (`+placeholders(len(names))+`)
+		GROUP BY component, version ORDER BY component, MAX(created_at) DESC`, append([]any{repo.Name}, names...)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []*componentView{}
-	var cur *componentView
 	for rows.Next() {
 		var name string
 		var v versionView
 		rows.Scan(&name, &v.Version, &v.Assets, &v.Size, &v.Downloads, &v.UpdatedAt)
-		if cur == nil || cur.Name != name {
-			cur = &componentView{Name: name, Versions: []versionView{}}
-			out = append(out, cur)
-		}
-		cur.Assets += v.Assets
-		cur.Size += v.Size
-		cur.Downloads += v.Downloads
-		cur.UpdatedAt = max(cur.UpdatedAt, v.UpdatedAt)
-		if v.Version != "" {
-			cur.Versions = append(cur.Versions, v)
-		}
+		byName[name].Versions = append(byName[name].Versions, v)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (a *App) deleteComponentAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
@@ -436,7 +509,7 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 				err = httpErr{400, "invalid path: " + p}
 				break
 			}
-			if repo.Format == "go" && !regexp.MustCompile(`/@v/v[^/]+\.(zip|mod|info)$`).MatchString(p) {
+			if repo.Format == "go" && !goUploadRe.MatchString(p) {
 				err = httpErr{400, "Go modules are uploaded as <module>/@v/<version>.zip and .mod (directory <module>/@v)"}
 				break
 			}
@@ -576,20 +649,33 @@ func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(s)
 }
 
+var searchSort = map[string]string{
+	"updated": "a.updated_at DESC", "name": "a.component, a.path", "size": "a.size DESC", "downloads": "a.downloads DESC",
+}
+
 func (a *App) searchAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	q := r.URL.Query()
 	repos := a.readableRepos(u)
 	if len(repos) == 0 {
+		setTotal(w, 0)
 		return []*Asset{}, nil
+	}
+	limit, offset := pageParams(r, 500)
+	order := searchSort[q.Get("sort")]
+	if order == "" {
+		order = searchSort["updated"]
 	}
 	like := "%" + likeEscape(q.Get("q")) + "%"
 	args := append([]any{like, q.Get("repo"), q.Get("format")}, anySlice(repos)...)
-	list, err := a.queryAssets(`JOIN repositories r ON r.name=a.repo
+	where := `JOIN repositories r ON r.name=a.repo
 		WHERE (a.path LIKE ?1 ESCAPE '\' OR a.component LIKE ?1 ESCAPE '\')
 		AND (?2='' OR a.repo=?2) AND (?3='' OR r.format=?3)
 		AND a.path NOT LIKE '%/blobs/sha256:%' AND a.uploader!='system'
-		AND a.repo IN (`+placeholders(len(repos))+`)
-		ORDER BY a.updated_at DESC LIMIT 500`, args...)
+		AND a.repo IN (` + placeholders(len(repos)) + `)`
+	if err := a.setCappedTotal(w, "FROM assets a "+where, args...); err != nil {
+		return nil, err
+	}
+	list, err := a.queryAssets(where+` ORDER BY `+order+`, a.id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if list == nil {
 		list = []*Asset{}
 	}
@@ -675,7 +761,7 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 	var initialOwner string
 	a.db.QueryRow(`SELECT COUNT(*) FROM notifiers`).Scan(&channels)
 	a.db.QueryRow(`SELECT COUNT(*) FROM tokens WHERE username=? AND kind='api'`, u.Username).Scan(&tokens)
-	a.db.QueryRow(`SELECT COUNT(*) FROM assets WHERE uploader NOT IN ('proxy','system') OR downloads>0`).Scan(&published)
+	a.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM assets WHERE uploader NOT IN ('proxy','system') OR downloads>0)`).Scan(&published) // EXISTS stops at the first row
 	s.Setup = map[string]bool{
 		"passwordChanged": !a.getJSON("initial_password", &initialOwner),
 		"baseUrl":         a.settings().BaseURL != "",
@@ -874,12 +960,20 @@ func (a *App) putSettingsAPI(w http.ResponseWriter, r *http.Request, u *User) (a
 	return s, nil
 }
 
-func (a *App) auditAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
+// auditWhere filters events by ?q= (user, action or target) and ?action= (a prefix).
+func auditWhere(r *http.Request) (string, []any) {
 	q := r.URL.Query()
-	like := "%" + likeEscape(q.Get("q")) + "%"
-	rows, err := a.db.Query(`SELECT id, ts, username, action, target, detail FROM events
-		WHERE (username LIKE ?1 ESCAPE '\' OR action LIKE ?1 ESCAPE '\' OR target LIKE ?1 ESCAPE '\') AND (?2='' OR action LIKE ?2 || '%')
-		ORDER BY id DESC LIMIT 1000`, like, q.Get("action"))
+	return `FROM events WHERE (username LIKE ?1 ESCAPE '\' OR action LIKE ?1 ESCAPE '\' OR target LIKE ?1 ESCAPE '\') AND (?2='' OR action LIKE ?2 || '%')`,
+		[]any{"%" + likeEscape(q.Get("q")) + "%", q.Get("action")}
+}
+
+func (a *App) auditAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
+	limit, offset := pageParams(r, 1000)
+	from, args := auditWhere(r)
+	if err := a.setCappedTotal(w, from, args...); err != nil {
+		return nil, err
+	}
+	rows, err := a.db.Query(`SELECT id, ts, username, action, target, detail `+from+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -898,5 +992,35 @@ func (a *App) auditAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		rows.Scan(&e.ID, &e.TS, &e.Username, &e.Action, &e.Target, &e.Detail)
 		out = append(out, e)
 	}
-	return out, nil
+	return out, rows.Err()
+}
+
+// auditExportAPI streams every matching event as CSV, newest first.
+func (a *App) auditExportAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
+	from, args := auditWhere(r)
+	rows, err := a.db.Query(`SELECT ts, username, action, target, detail `+from+` ORDER BY id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="repoman-audit-`+time.Now().UTC().Format("2006-01-02")+`.csv"`)
+	cw := csv.NewWriter(w)
+	cw.Write([]string{"time", "user", "action", "target", "detail"})
+	for rows.Next() {
+		var ts int64
+		var user, action, target, detail string
+		rows.Scan(&ts, &user, &action, &target, &detail)
+		cw.Write([]string{time.Unix(ts, 0).UTC().Format(time.RFC3339), csvSafe(user), action, csvSafe(target), csvSafe(detail)})
+	}
+	cw.Flush()
+	return written, nil
+}
+
+// csvSafe stops spreadsheet apps from evaluating a cell as a formula.
+func csvSafe(s string) string {
+	if s != "" && strings.ContainsRune("=+-@", rune(s[0])) {
+		return "'" + s
+	}
+	return s
 }

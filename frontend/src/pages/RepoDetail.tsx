@@ -1,6 +1,6 @@
 import {
   ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Button, Card, Code, Drawer, Group, Loader, Menu, Modal, Progress, Select, SimpleGrid, Skeleton,
-  Stack, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip,
+  Stack, Switch, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip,
 } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import { useDebouncedValue, useDocumentTitle } from '@mantine/hooks'
@@ -9,7 +9,7 @@ import {
   IconFolderOpen, IconInfoCircle, IconKey, IconLock, IconPackage, IconPlayerPause, IconPlayerPlay, IconPlugConnected, IconRefresh,
   IconSearch, IconTrash, IconUpload, IconWand, IconX,
 } from '@tabler/icons-react'
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth, useBaseUrl, useIsAdmin } from '../App'
 import {
@@ -18,7 +18,7 @@ import {
 import { formatInfo } from '../formats'
 import { clientGuides, repoUrl } from '../setup'
 import {
-  confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, StatusBadge, timeAgo, TypeBadge,
+  confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, Pager, StatusBadge, timeAgo, TypeBadge, usePaging,
 } from '../util'
 import { RepoSettingsFields } from './RepoConfig'
 import { downloadUrl } from '../links'
@@ -196,16 +196,30 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
   const [params, setParams] = useSearchParams()
   const path = params.get('path') ?? ''
   const selected = params.get('select')
-  const { data, loading, reload } = useApi<BrowseEntry[]>(`/repositories/${repo.name}/browse?path=${encodeURIComponent(path)}`)
-  const [uploading, setUploading] = useState(false)
+  const paging = usePaging(100)
   const [filter, setFilter] = useState('')
+  const [dfilter] = useDebouncedValue(filter, 250)
+  useEffect(() => setFilter(''), [path])
+  const { data, total, loading, reload } = useApi<BrowseEntry[]>(
+    `/repositories/${repo.name}/browse?path=${encodeURIComponent(path)}&q=${encodeURIComponent(dfilter)}&${paging.query}`)
+  const [uploading, setUploading] = useState(false)
   const upload = formatInfo(repo.format).upload
   const canUpload = canWrite && repo.type === 'hosted' && !!upload
 
-  const go = (p: string, select?: string) => setParams(select ? { path: p, select } : p ? { path: p } : {})
+  // opening a file keeps the page; changing folder starts at its first page
+  const go = (p: string, select?: string) => setParams((cur) => {
+    const next = new URLSearchParams()
+    if (p) next.set('path', p)
+    if (select) next.set('select', select)
+    if (p === path) for (const k of ['page', 'size']) { const v = cur.get(k); if (v) next.set(k, v) }
+    return next
+  })
   const parts = path ? path.split('/') : []
-  const asset = data?.find((e) => e.asset?.path === selected)?.asset
-  const rows = data?.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
+  const onPage = data?.find((e) => e.asset?.path === selected)?.asset
+  // deep links (e.g. from search) can point at a file on another page of a large folder
+  const fetched = useApi<Asset>(selected && data && !onPage ? `/repositories/${repo.name}/asset?path=${encodeURIComponent(selected)}` : null)
+  const asset = selected ? onPage ?? (fetched.data?.path === selected ? fetched.data : undefined) : undefined
+  const rows = data
 
   return (
     <Card padding={0}>
@@ -217,12 +231,12 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
             : <Anchor component="button" type="button" size="sm" key={i} onClick={() => go(parts.slice(0, i + 1).join('/'))}>{p}</Anchor>)}
         </Breadcrumbs>
         <Group gap="xs">
-          <TextInput size="xs" placeholder="Filter this folder" aria-label="Filter this folder" leftSection={<IconSearch size={14} />} value={filter} onChange={(e) => setFilter(e.currentTarget.value)} />
+          <TextInput size="xs" placeholder="Filter this folder" aria-label="Filter this folder" leftSection={<IconSearch size={14} />} value={filter} onChange={(e) => { setFilter(e.currentTarget.value); paging.setPage(1, true) }} />
           {canUpload && <Button size="xs" leftSection={<IconUpload size={14} />} onClick={() => setUploading(true)}>Upload</Button>}
         </Group>
       </Group>
       <Table.ScrollContainer minWidth={600}>
-        <Table highlightOnHover verticalSpacing="xs" horizontalSpacing="md">
+        <Table highlightOnHover verticalSpacing="xs" horizontalSpacing="md" style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
           <Table.Thead>
             <Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th>Updated</Table.Th><Table.Th ta="right">Downloads</Table.Th></Table.Tr>
           </Table.Thead>
@@ -250,8 +264,9 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
         </Table>
       </Table.ScrollContainer>
       {loading && !data && <Group justify="center" p="xl"><Loader size="sm" /></Group>}
-      {data?.length !== 0 && rows?.length === 0 && <EmptyState icon={<IconSearch />} title="Nothing in this folder matches your filter" />}
-      {data?.length === 0 && (
+      <Pager paging={paging} total={total} noun="entries" />
+      {!loading && data?.length === 0 && !total && dfilter && <EmptyState icon={<IconSearch />} title="Nothing in this folder matches your filter" />}
+      {!loading && data?.length === 0 && !total && !dfilter && (
         <EmptyState icon={<IconFolderOpen />} title={path ? 'This folder is empty' : 'This repository is empty'}
           action={canUpload ? <Button onClick={() => setUploading(true)} leftSection={<IconUpload size={16} />}>Upload files</Button>
             : <Button component={Link} to={`/repositories/${repo.name}/setup`} variant="light">Show setup instructions</Button>}>
@@ -334,29 +349,46 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
   const upload = formatInfo(repo.format).upload!
   const [files, setFiles] = useState<File[]>([])
   const [target, setTarget] = useState(dir)
-  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<number>() // 0–100 while uploading
+  const xhr = useRef<XMLHttpRequest>()
+  const busy = progress !== undefined
   useEffect(() => { if (opened) { setTarget(dir); setFiles([]) } }, [opened, dir])
+  const totalBytes = files.reduce((n, f) => n + f.size, 0)
 
+  // XHR rather than fetch: fetch can't report upload progress, which matters for multi-GB artifacts
   const submit = () => {
     const fd = new FormData()
     fd.set('path', target)
     files.forEach((f) => fd.append('file', f))
-    setBusy(true)
-    api<{ uploaded: string[] }>(`/repositories/${repo.name}/upload`, { body: fd })
-      .then((r) => { notifyOk(`Uploaded ${r.uploaded.length} file(s)`); onClose(); onDone() })
-      .catch(notifyError)
-      .finally(() => setBusy(false))
+    const req = new XMLHttpRequest()
+    xhr.current = req
+    req.open('POST', `/api/repositories/${repo.name}/upload`)
+    req.upload.onprogress = (e) => e.lengthComputable && setProgress((e.loaded / e.total) * 100)
+    req.onload = () => {
+      setProgress(undefined)
+      let body: { uploaded?: string[]; error?: string } = {}
+      try { body = JSON.parse(req.responseText) } catch { /* non-JSON error page */ }
+      if (req.status >= 200 && req.status < 300) { notifyOk(`Uploaded ${body.uploaded?.length ?? 0} file(s)`); onClose(); onDone(); return }
+      if (req.status === 401) window.dispatchEvent(new Event('rm:unauthorized'))
+      notifyError(new Error(body.error ?? `Upload failed (${req.status} ${req.statusText})`))
+      if (body.uploaded?.length) onDone() // earlier files in the batch were stored
+    }
+    req.onerror = () => { setProgress(undefined); notifyError(new Error('Upload failed — check your connection and try again')) }
+    req.onabort = () => setProgress(undefined)
+    setProgress(0)
+    req.send(fd)
   }
+  const close = () => { if (busy) xhr.current?.abort(); onClose() }
 
   return (
-    <Modal opened={opened} onClose={onClose} title={<Text fw={600}>Upload to {repo.name}</Text>} size="lg">
+    <Modal opened={opened} onClose={close} closeOnClickOutside={!busy} title={<Text fw={600}>Upload to {repo.name}</Text>} size="lg">
       <Stack>
         <Alert variant="light" icon={<IconInfoCircle />} py="xs">{upload.hint}</Alert>
         {upload.dir && (
           <TextInput label={upload.dir.label} placeholder={upload.dir.placeholder} description={upload.dir.description} value={target}
             onChange={(e) => setTarget(e.currentTarget.value)} />
         )}
-        <Dropzone onDrop={(f) => setFiles((cur) => [...cur, ...f])} multiple
+        <Dropzone onDrop={(f) => setFiles((cur) => [...cur, ...f])} multiple disabled={busy}
           validator={(f) => upload.accept && !upload.accept.some((ext) => f.name.endsWith(ext)) ? { code: 'type', message: `Only ${upload.accept.join(', ')} files` } : null}
           onReject={(r) => notifyError(new Error(`${r.length} file(s) skipped: ${r[0]?.errors[0]?.message}`))}>
           <Stack align="center" gap={4} py="lg" style={{ pointerEvents: 'none' }}>
@@ -368,19 +400,30 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
           </Stack>
         </Dropzone>
         {files.length > 0 && (
-          <Stack gap={4}>
+          <Stack gap={4} mah={240} style={{ overflowY: 'auto' }}>
             {files.map((f, i) => (
               <Group key={i} justify="space-between" wrap="nowrap">
                 <Group gap="xs" wrap="nowrap"><IconFile size={16} /><Text size="sm" truncate="end">{f.name}</Text></Group>
                 <Group gap="xs" wrap="nowrap"><Text size="xs" c="dimmed">{formatBytes(f.size)}</Text>
-                  <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setFiles(files.filter((_, j) => j !== i))} aria-label="Remove file"><IconX size={14} /></ActionIcon></Group>
+                  <ActionIcon size="sm" variant="subtle" color="gray" disabled={busy} onClick={() => setFiles(files.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><IconX size={14} /></ActionIcon></Group>
               </Group>
             ))}
           </Stack>
         )}
-        <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} loading={busy} disabled={!files.length}>Upload {files.length || ''} file{files.length === 1 ? '' : 's'}</Button>
+        {busy && (
+          <Stack gap={4}>
+            <Progress value={progress} animated={progress < 100} aria-label="Upload progress" />
+            <Text size="xs" c="dimmed" aria-live="polite">
+              {progress < 100 ? `${progress.toFixed(0)}% of ${formatBytes(totalBytes)} sent` : 'Processing on the server…'}
+            </Text>
+          </Stack>
+        )}
+        <Group justify="space-between">
+          <Text size="xs" c="dimmed">{files.length > 0 && `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalBytes)}`}</Text>
+          <Group gap="xs">
+            <Button variant="default" onClick={close}>{busy ? 'Cancel upload' : 'Cancel'}</Button>
+            <Button onClick={submit} loading={busy} disabled={!files.length}>Upload {files.length || ''} file{files.length === 1 ? '' : 's'}</Button>
+          </Group>
         </Group>
       </Stack>
     </Modal>
@@ -389,11 +432,21 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
 
 // ---------- components ----------
 
+/** Versions listed under an expanded component before "Show all". */
+const VERSIONS_SHOWN = 20
+
 function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; onChanged: () => void }) {
-  const [q, setQ] = useState('')
+  const [params, setParams] = useSearchParams()
+  const [q, setQ] = useState(params.get('q') ?? '')
   const [dq] = useDebouncedValue(q, 250)
+  const sort = params.get('sort') ?? 'name'
+  const paging = usePaging()
+  const set = (key: string, value: string) => setParams((p) => { if (value) p.set(key, value); else p.delete(key); p.delete('page'); return p }, { replace: true })
   const [open, setOpen] = useState<string>()
-  const { data, loading, reload } = useApi<Component[]>(repo.type === 'group' ? null : `/repositories/${repo.name}/components?q=${encodeURIComponent(dq)}`)
+  const [allVersions, setAllVersions] = useState(false)
+  const { data, total, loading, reload } = useApi<Component[]>(repo.type === 'group' ? null
+    : `/repositories/${repo.name}/components?q=${encodeURIComponent(dq)}&sort=${sort}&${paging.query}`)
+  const toggle = (name: string) => { setOpen(open === name ? undefined : name); setAllVersions(false) }
   const del = (c: string, v?: string) => confirmAction({
     title: v ? `Delete ${c} ${v}?` : `Delete all versions of ${c}?`, danger: true, label: 'Delete',
     body: v ? 'All files of this version are removed.' : 'Every version and file of this component is removed.',
@@ -408,17 +461,22 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
     <Card padding={0}>
       <Group p="md" justify="space-between">
         <Text size="sm" c="dimmed">Packages, artifacts and images grouped by name and version.</Text>
-        <TextInput size="xs" placeholder="Filter components" aria-label="Filter components" leftSection={<IconSearch size={14} />} value={q} onChange={(e) => setQ(e.currentTarget.value)} />
+        <Group gap="xs">
+          <Select size="xs" w={170} aria-label="Sort components" allowDeselect={false} value={sort} onChange={(v) => set('sort', v === 'name' ? '' : v ?? '')}
+            data={[{ value: 'name', label: 'Name' }, { value: 'updated', label: 'Recently updated' }, { value: 'downloads', label: 'Most downloaded' }, { value: 'size', label: 'Largest' }]} />
+          <TextInput size="xs" placeholder="Filter components" aria-label="Filter components" leftSection={<IconSearch size={14} />} value={q}
+            onChange={(e) => { setQ(e.currentTarget.value); set('q', e.currentTarget.value) }} />
+        </Group>
       </Group>
       <Table.ScrollContainer minWidth={700}>
-        <Table verticalSpacing="xs" horizontalSpacing="md" highlightOnHover>
+        <Table verticalSpacing="xs" horizontalSpacing="md" highlightOnHover style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
           <Table.Thead>
             <Table.Tr><Table.Th w={30} /><Table.Th>Component</Table.Th><Table.Th>Latest</Table.Th><Table.Th ta="right">Versions</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th ta="right">Downloads</Table.Th><Table.Th>Updated</Table.Th><Table.Th /></Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {data?.map((c) => (
               <Fragment key={c.name}>
-                <Table.Tr className="row-link" tabIndex={0} aria-expanded={c.versions.length > 0 ? open === c.name : undefined} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => setOpen(open === c.name ? undefined : c.name)}>
+                <Table.Tr className="row-link" tabIndex={0} aria-expanded={c.versions.length > 0 ? open === c.name : undefined} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => toggle(c.name)}>
                   <Table.Td>{c.versions.length > 0 && (open === c.name ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />)}</Table.Td>
                   <Table.Td><Text size="sm" fw={500} style={{ wordBreak: 'break-all' }}>{c.name}</Text></Table.Td>
                   <Table.Td>{c.versions[0] ? <Badge variant="light" radius="sm">{c.versions[0].version}</Badge> : '—'}</Table.Td>
@@ -430,7 +488,7 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
                     {canWrite && <Tooltip label="Delete component"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name)} aria-label="Delete component"><IconTrash size={16} /></ActionIcon></Tooltip>}
                   </Table.Td>
                 </Table.Tr>
-                {open === c.name && c.versions.map((v) => (
+                {open === c.name && (allVersions ? c.versions : c.versions.slice(0, VERSIONS_SHOWN)).map((v) => (
                   <Table.Tr key={v.version} bg="var(--mantine-color-default-hover)">
                     <Table.Td />
                     <Table.Td colSpan={2}><Group gap="xs"><Text size="sm" ff="monospace">{v.version}</Text><Text size="xs" c="dimmed">{v.assets} files</Text></Group></Table.Td>
@@ -441,13 +499,22 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
                     <Table.Td>{canWrite && <Tooltip label="Delete version"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name, v.version)} aria-label="Delete version"><IconTrash size={16} /></ActionIcon></Tooltip>}</Table.Td>
                   </Table.Tr>
                 ))}
+                {open === c.name && !allVersions && c.versions.length > VERSIONS_SHOWN && (
+                  <Table.Tr bg="var(--mantine-color-default-hover)">
+                    <Table.Td />
+                    <Table.Td colSpan={7}>
+                      <Button size="compact-xs" variant="subtle" onClick={() => setAllVersions(true)}>Show all {c.versions.length.toLocaleString()} versions</Button>
+                    </Table.Td>
+                  </Table.Tr>
+                )}
               </Fragment>
             ))}
           </Table.Tbody>
         </Table>
       </Table.ScrollContainer>
       {loading && !data && <Group justify="center" p="xl"><Loader size="sm" /></Group>}
-      {data?.length === 0 && <EmptyState icon={<IconPackage />} title={q ? 'No matching components' : 'No components yet'}>
+      <Pager paging={paging} total={total} noun="components" />
+      {!loading && data?.length === 0 && !total && <EmptyState icon={<IconPackage />} title={q ? 'No matching components' : 'No components yet'}>
         {repo.format === 'raw' ? 'Raw repositories store plain files — use the Browse tab.' : 'Components appear once packages are published or cached.'}
       </EmptyState>}
     </Card>
@@ -531,7 +598,17 @@ function AccessTab({ repo }: { repo: Repo }) {
   const perms = useApi<Permission[]>(`/repositories/${repo.name}/permissions`)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
+  const [q, setQ] = useState('')
+  const [onlyOverrides, setOnlyOverrides] = useState(false)
+  const paging = usePaging()
   useEffect(() => { if (perms.data) setDraft(Object.fromEntries(perms.data.map((p) => [p.username, p.level]))) }, [perms.data])
+  const ql = q.trim().toLowerCase()
+  const matching = (users.data ?? []).filter((u) => (u.username.toLowerCase().includes(ql) || u.email.toLowerCase().includes(ql))
+    && (!onlyOverrides || (draft[u.username] ?? 'inherit') !== 'inherit'))
+  const shown = matching.slice(paging.offset, paging.offset + paging.size)
+  const filterBy = (fn: () => void) => { fn(); paging.setPage(1, true) }
+  const saved = Object.fromEntries((perms.data ?? []).map((p) => [p.username, p.level]))
+  const dirty = Object.keys({ ...saved, ...draft }).some((k) => (draft[k] ?? 'inherit') !== (saved[k] ?? 'inherit'))
 
   const save = () => {
     setBusy(true)
@@ -555,10 +632,16 @@ function AccessTab({ repo }: { repo: Repo }) {
         </Group>
       </Card>
       <Card padding={0}>
+        <Group p="md" justify="space-between" gap="sm">
+          <Switch size="sm" label="Only users with an override" checked={onlyOverrides} onChange={(e) => { const v = e.currentTarget.checked; filterBy(() => setOnlyOverrides(v)) }} />
+          <TextInput size="xs" placeholder="Filter by name or email" aria-label="Filter users" leftSection={<IconSearch size={14} />} value={q}
+            onChange={(e) => { const v = e.currentTarget.value; filterBy(() => setQ(v)) }} />
+        </Group>
+        <Table.ScrollContainer minWidth={560}>
         <Table verticalSpacing="sm" horizontalSpacing="md">
           <Table.Thead><Table.Tr><Table.Th>User</Table.Th><Table.Th>From role</Table.Th><Table.Th w={220}>Access to {repo.name}</Table.Th></Table.Tr></Table.Thead>
           <Table.Tbody>
-            {users.data?.map((u) => (
+            {shown.map((u) => (
               <Table.Tr key={u.username}>
                 <Table.Td><Text size="sm" fw={500} span>{u.username}</Text>{u.disabled && <Badge size="xs" color="gray" ml="xs">disabled</Badge>}</Table.Td>
                 <Table.Td><Text size="sm" c="dimmed">{roleDefault[u.role]}</Text></Table.Td>
@@ -572,8 +655,14 @@ function AccessTab({ repo }: { repo: Repo }) {
             ))}
           </Table.Tbody>
         </Table>
+        </Table.ScrollContainer>
+        {users.data && matching.length === 0 && <EmptyState icon={<IconSearch />} title="No users match">Clear the filter to see everyone.</EmptyState>}
+        <Pager paging={paging} total={matching.length} noun="users" />
       </Card>
-      <Group justify="flex-end"><Button onClick={save} loading={busy}>Save access</Button></Group>
+      <Group justify="flex-end" gap="sm">
+        {dirty && <Text size="sm" c="dimmed">Unsaved changes — they are kept across pages until you save.</Text>}
+        <Button onClick={save} loading={busy} disabled={!dirty}>Save access</Button>
+      </Group>
     </Stack>
   )
 }
