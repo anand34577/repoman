@@ -5,9 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.5.0]
+## [1.5.1]
 
 An audit of the server and the web UI: faster on large installations, several fixes, and a smoother interface.
+This is the first published release of the 1.5 series: 1.5.0 was tagged but never published, because its
+totals cache could answer with a count that was a few microseconds out of date right after an upload.
 
 ### Performance
 
