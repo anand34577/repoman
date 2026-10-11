@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0]
+
 An audit of the server and the web UI: faster on large installations, several fixes, and a smoother interface.
 
 ### Performance
