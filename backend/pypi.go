@@ -68,9 +68,9 @@ func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p 
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, "<!DOCTYPE html>\n<html><head><title>Links for %s</title></head><body>\n<h1>Links for %s</h1>\n", name, name)
+		fmt.Fprintf(w, "<!DOCTYPE html>\n<html><head><title>Links for %[1]s</title></head><body>\n<h1>Links for %[1]s</h1>\n", html.EscapeString(name))
 		for _, l := range links {
-			href := "../../packages/" + name + "/" + url.PathEscape(l.File)
+			href := "../../packages/" + url.PathEscape(name) + "/" + url.PathEscape(l.File)
 			if l.Frag != "" {
 				href += "#" + l.Frag
 			}

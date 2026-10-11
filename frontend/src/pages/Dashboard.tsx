@@ -9,7 +9,7 @@ import { Link } from 'react-router-dom'
 import { useAuth, useIsAdmin } from '../App'
 import { useApi, type Asset, type Stats } from '../api'
 import { formatInfo, FormatIcon } from '../formats'
-import { EmptyState, formatBytes, LoadError, PageHeader, StatusBadge, timeAgo } from '../util'
+import { EmptyState, formatBytes, LoadError, PageHeader, plural, StatusBadge, timeAgo } from '../util'
 import { assetLink } from '../links'
 
 function StatCard({ label, value, hint, icon: Icon, color }: { label: string; value: string | number; hint?: string; icon: typeof IconServer; color: string }) {
@@ -78,17 +78,17 @@ function GettingStarted({ setup }: { setup: Stats['setup'] }) {
       <Progress value={(done / checklist.length) * 100} mb="md" size="sm" />
       <Stack gap="sm">
         {checklist.map((c) => (
-          <Group key={c.key} justify="space-between" wrap="nowrap">
-            <Group gap="sm" wrap="nowrap">
+          <Group key={c.key} justify="space-between" gap="xs">
+            <Group gap="sm" wrap="nowrap" align="flex-start" style={{ flex: '1 1 260px', minWidth: 0 }}>
               {setup[c.key]
-                ? <ThemeIcon color="teal" variant="transparent"><IconCircleCheckFilled /></ThemeIcon>
-                : <ThemeIcon color="gray" variant="transparent"><IconCircleDashed /></ThemeIcon>}
+                ? <ThemeIcon color="teal" variant="transparent" style={{ flexShrink: 0 }}><IconCircleCheckFilled /></ThemeIcon>
+                : <ThemeIcon color="gray" variant="transparent" style={{ flexShrink: 0 }}><IconCircleDashed /></ThemeIcon>}
               <div>
                 <Text size="sm" fw={500} td={setup[c.key] ? 'line-through' : undefined} c={setup[c.key] ? 'dimmed' : undefined}>{c.label}</Text>
                 {!setup[c.key] && <Text size="xs" c="dimmed">{c.hint}</Text>}
               </div>
             </Group>
-            {!setup[c.key] && <Button component={Link} to={c.to} size="xs" variant="light" style={{ flexShrink: 0 }}>{c.cta}</Button>}
+            {!setup[c.key] && <Button component={Link} to={c.to} size="xs" variant="light" ml={40} style={{ flexShrink: 0 }}>{c.cta}</Button>}
           </Group>
         ))}
       </Stack>
@@ -113,7 +113,7 @@ export default function Dashboard() {
 
       <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }} mb="lg">
         {s ? <>
-          <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={`${s.users} users`} />
+          <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={plural(s.users, 'user')} />
           <StatCard label="Artifacts" value={s.assets.toLocaleString()} icon={IconArchive} color="teal" />
           <StatCard label="Storage used" value={formatBytes(s.storageBytes)} icon={IconServer} color="blue"
             hint={s.logicalBytes > s.storageBytes ? `${formatBytes(s.logicalBytes - s.storageBytes)} saved by deduplication` : undefined} />
@@ -121,26 +121,9 @@ export default function Dashboard() {
         </> : Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={96} radius="lg" />)}
       </SimpleGrid>
 
-      <SimpleGrid cols={{ base: 1, md: 2 }} mb="lg">
-        <Card padding="lg">
-          <Text fw={600} mb="md">Storage by format</Text>
-          {!s && <Stack gap="md">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={28} />)}</Stack>}
-          {s && !s.formats.some((f) => f.repos > 0) && <EmptyState icon={<IconDatabase />} title="No repositories yet" />}
-          <Stack gap="md">
-            {s?.formats.filter((f) => f.repos > 0).map((f) => (
-              <div key={f.format}>
-                <Group justify="space-between" mb={4}>
-                  <Group gap={6}><FormatIcon format={f.format} size={16} /><Text size="sm" fw={500}>{formatInfo(f.format).label}</Text>
-                    <Text size="xs" c="dimmed">{f.repos} repos · {f.assets.toLocaleString()} artifacts</Text></Group>
-                  <Text size="sm" c="dimmed">{formatBytes(f.bytes)}</Text>
-                </Group>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: `${Math.max(1, (f.bytes / maxBytes) * 100)}%`, background: `var(--mantine-color-${formatInfo(f.format).color}-5)` }} />
-                </div>
-              </div>
-            ))}
-          </Stack>
-        </Card>
+      {/* two independent columns: a short card is not stretched to the height of its neighbour */}
+      <SimpleGrid cols={{ base: 1, md: 2 }} style={{ alignItems: 'start' }}>
+        <Stack gap="md">
         <Card padding="lg">
           <Text fw={600} mb="md">Needs attention</Text>
           {!s ? <Skeleton h={28} /> : !s.attention?.length ? (
@@ -150,9 +133,9 @@ export default function Dashboard() {
             <Stack gap="sm">
               {s?.attention?.map((r) => (
                 <Group key={r.name} justify="space-between" wrap="nowrap">
-                  <Group gap="sm" wrap="nowrap">
-                    <IconAlertTriangle size={18} color="var(--mantine-color-orange-6)" />
-                    <div>
+                  <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                    <IconAlertTriangle size={18} color="var(--mantine-color-orange-6)" style={{ flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
                       <Anchor component={Link} to={`/repositories/${r.name}`} size="sm" fw={500}>{r.name}</Anchor>
                       <Text size="xs" c="dimmed" lineClamp={1}>
                         {r.status === 'degraded' ? r.health?.lastError : r.status === 'offline' ? 'Offline — clients get errors' : `Using ${formatBytes(r.size)} of ${r.quotaMb} MB quota`}
@@ -165,11 +148,30 @@ export default function Dashboard() {
             </Stack>
           )}
         </Card>
-      </SimpleGrid>
-
-      <SimpleGrid cols={{ base: 1, md: 2 }}>
         <AssetList title="Recently published" assets={s?.recent} metric={(a) => timeAgo(a.createdAt)} empty="Nothing published yet. Open a hosted repository's Setup tab to publish your first artifact." />
-        <AssetList title="Most downloaded" assets={s?.popular} metric={(a) => `${a.downloads.toLocaleString()} downloads`} empty="No downloads yet." />
+        </Stack>
+        <Stack gap="md">
+        <Card padding="lg">
+          <Text fw={600} mb="md">Storage by format</Text>
+          {!s && <Stack gap="md">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={28} />)}</Stack>}
+          {s && !s.formats.some((f) => f.repos > 0) && <EmptyState icon={<IconDatabase />} title="No repositories yet" />}
+          <Stack gap="md">
+            {s?.formats.filter((f) => f.repos > 0).map((f) => (
+              <div key={f.format}>
+                <Group justify="space-between" mb={4}>
+                  <Group gap={6}><FormatIcon format={f.format} size={16} /><Text size="sm" fw={500}>{formatInfo(f.format).label}</Text>
+                    <Text size="xs" c="dimmed">{plural(f.repos, 'repository', 'repositories')} · {plural(f.assets, 'artifact')}</Text></Group>
+                  <Text size="sm" c="dimmed">{formatBytes(f.bytes)}</Text>
+                </Group>
+                <div className="bar-track">
+                  <div className="bar-fill" style={{ width: f.bytes ? `${Math.max(2, (f.bytes / maxBytes) * 100)}%` : 0, background: `var(--mantine-color-${formatInfo(f.format).color}-5)` }} />
+                </div>
+              </div>
+            ))}
+          </Stack>
+        </Card>
+        <AssetList title="Most downloaded" assets={s?.popular} metric={(a) => plural(a.downloads, 'download')} empty="No downloads yet." />
+        </Stack>
       </SimpleGrid>
     </>
   )

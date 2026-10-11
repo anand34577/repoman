@@ -17,8 +17,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -74,6 +76,15 @@ type App struct {
 	quotaWarned sync.Map       // repo -> time.Time of the last "quota reached" event
 
 	requests [6]atomic.Int64 // HTTP responses by status class (index = code/100)
+
+	dlMu      sync.Mutex
+	dlPending map[int64]dlCount // download counters not yet written (see markDownloaded)
+
+	searchIndex bool // the trigram index exists (see ensureSearchIndex)
+
+	assetGen    atomic.Int64 // bumped whenever assets change; invalidates the cached aggregates below
+	repoTotals  slowStat[map[string]repoView]
+	storedBytes slowStat[[2]int64] // distinct content files and their bytes, for the caller's repositories
 }
 
 const usage = `RepoMan %s — self-hosted artifact repository manager
@@ -176,6 +187,7 @@ func serve(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("opening data directory %s: %w", cfg.DataDir, err)
 	}
 	defer a.db.Close()
+	defer a.flushDownloads() // counters of the last seconds, once requests have drained
 	a.cfg = cfg
 	if err := a.bootstrap(cfg.AdminPassword); err != nil {
 		return err
@@ -388,12 +400,15 @@ func newApp(dataDir string) (*App, error) {
 		tasks:         map[string]*taskState{},
 		upstreamRetry: 30 * time.Second,
 		notifyQ:       make(chan notifyJob, 256),
+		dlPending:     map[int64]dlCount{},
+		searchIndex:   ensureSearchIndex(db),
 	}
 	a.getJSON("tasks", &a.tasks)
 	for _, st := range a.tasks { // a task interrupted by a crash or restart is not running anymore
 		st.Running = false
 	}
 	go a.notifyWorker()
+	go a.downloadFlusher()
 	return a, nil
 }
 
@@ -642,7 +657,9 @@ func (g gzipWriter) Write(b []byte) (int, error) { return g.zw.Write(b) }
 
 func gzipHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || r.Method == http.MethodHead {
+		// a byte range refers to the uncompressed file, and fonts and images are compressed already
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || r.Method == http.MethodHead || r.Header.Get("Range") != "" ||
+			slices.Contains([]string{".woff2", ".woff", ".png", ".jpg", ".webp", ".ico"}, path.Ext(r.URL.Path)) {
 			h.ServeHTTP(w, r)
 			return
 		}

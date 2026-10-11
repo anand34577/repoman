@@ -11,8 +11,9 @@ import { ModalsProvider } from '@mantine/modals'
 import { Notifications } from '@mantine/notifications'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import App from './App'
+import { ErrorBoundary, RouteError } from './util'
 
 // Indigo-violet brand; shade 6 passes WCAG AA for white text.
 const brand: MantineColorsTuple = ['#f0efff', '#dedcff', '#bab5ff', '#938bfd', '#7267fb', '#5d50fa', '#5143f0', '#4236d6', '#382fc0', '#2c27a6']
@@ -49,14 +50,18 @@ const theme = createTheme({
   },
 })
 
+// One catch-all route: pages are matched by <Routes> inside App. The data router is what lets a page
+// hold back navigation while it has unsaved changes (useUnsavedGuard).
+const router = createBrowserRouter([{ path: '*', element: <App />, errorElement: <RouteError /> }])
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <MantineProvider theme={theme} defaultColorScheme="auto">
       <ModalsProvider>
         <Notifications position="top-right" limit={4} />
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <ErrorBoundary>
+          <RouterProvider router={router} />
+        </ErrorBoundary>
       </ModalsProvider>
     </MantineProvider>
   </StrictMode>,

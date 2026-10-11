@@ -204,7 +204,7 @@ The image is built `FROM scratch`: it contains the binary and CA certificates an
 It runs as user `10001`, keeps everything in `/data` and has a built-in health check. Images exist for
 `linux/amd64`, `linux/arm64` and `linux/arm/v7`.
 
-Pin a version in production (`:1.4.0` or `:1.4`) instead of `:latest`.
+Pin a version in production (`:1.5.0` or `:1.5`) instead of `:latest`.
 
 **Edge cases**
 
@@ -251,7 +251,7 @@ spec:
       terminationGracePeriodSeconds: 40
       containers:
         - name: repoman
-          image: ghcr.io/anand34577/repoman:1.4.0
+          image: ghcr.io/anand34577/repoman:1.5.0
           ports: [{ containerPort: 8081 }]
           env:
             - { name: RM_TRUSTED_PROXIES, value: "10.0.0.0/8" }   # your ingress controller's pod network

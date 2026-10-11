@@ -185,7 +185,8 @@ Accounts that sign in only through SSO get a local password this way too, which 
 ### Metrics
 
 `GET /metrics` — Prometheus text format; requires any account (create a viewer named `monitoring` with a
-read-only token).
+read-only token). The per-repository series cover the repositories that account may read, so an account with
+access overrides sees fewer of them.
 
 ```yaml
 scrape_configs:

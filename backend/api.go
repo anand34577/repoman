@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -50,6 +53,16 @@ func (a *App) setCappedTotal(w http.ResponseWriter, from string, args ...any) er
 	return err
 }
 
+// setPageTotal sets X-Total-Count for a page that was just read. A page that came back short is the
+// last one, so the total is known without scanning the table a second time to count.
+func (a *App) setPageTotal(w http.ResponseWriter, got, limit, offset int, from string, args ...any) error {
+	if got < limit && (got > 0 || offset == 0) {
+		setTotal(w, min(offset+got, maxCount+1))
+		return nil
+	}
+	return a.setCappedTotal(w, from, args...)
+}
+
 // ---------- repositories ----------
 
 type repoView struct {
@@ -95,20 +108,52 @@ func (a *App) view(u *User, repo *Repo, stats map[string]repoView) repoView {
 	return v
 }
 
+// repoStats returns artifact count, bytes and downloads per repository. Callers must not modify the map.
 func (a *App) repoStats() (map[string]repoView, error) {
-	stats := map[string]repoView{}
-	rows, err := a.db.Query(`SELECT repo, COUNT(*), COALESCE(SUM(size),0), COALESCE(SUM(downloads),0) FROM assets GROUP BY repo`)
-	if err != nil {
-		return nil, err
+	return a.repoTotals.get("", a.assetGen.Load(), func() (map[string]repoView, error) {
+		stats := map[string]repoView{}
+		rows, err := a.db.Query(`SELECT repo, COUNT(*), COALESCE(SUM(size),0), COALESCE(SUM(downloads),0) FROM assets GROUP BY repo`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var v repoView
+			if err := rows.Scan(&name, &v.AssetCount, &v.Size, &v.Downloads); err != nil {
+				return nil, err
+			}
+			stats[name] = v
+		}
+		return stats, rows.Err()
+	})
+}
+
+// repoIn restricts a query to the repositories a caller may read: " AND <col> IN (…)" with its arguments.
+// When that is every repository the clause is left out, so the planner is free to walk an ORDER BY index
+// instead of visiting each repository in turn.
+func repoIn(col string, repos []string, all bool) (string, []any) {
+	switch {
+	case all:
+		return "", nil
+	case len(repos) == 0:
+		return " AND 0", nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		var v repoView
-		rows.Scan(&name, &v.AssetCount, &v.Size, &v.Downloads)
-		stats[name] = v
+	return " AND " + col + " IN (" + placeholders(len(repos)) + ")", anySlice(repos)
+}
+
+// storedTotals counts the distinct content files behind the given repositories and their bytes on disk.
+func (a *App) storedTotals(repos []string, all bool) (files, bytes int64, err error) {
+	in, args := repoIn("repo", repos, all)
+	key := "*" // every repository
+	if !all {
+		key = strings.Join(repos, "\x00")
 	}
-	return stats, nil
+	v, err := a.storedBytes.get(key, a.assetGen.Load(), func() (v [2]int64, err error) {
+		err = a.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size),0) FROM (SELECT MAX(size) AS size FROM assets WHERE 1`+in+` GROUP BY blob)`, args...).Scan(&v[0], &v[1])
+		return v, err
+	})
+	return v[0], v[1], err
 }
 
 func (a *App) listReposAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
@@ -205,7 +250,7 @@ func (a *App) createRepoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if err := a.validateRepo(&repo); err != nil {
 		return nil, err
 	}
-	repo.CreatedAt = time.Now().Unix()
+	repo.CreatedAt, repo.InvalidatedAt = time.Now().Unix(), 0
 	if err := a.saveRepo(&repo); err != nil {
 		return nil, err
 	}
@@ -226,7 +271,7 @@ func (a *App) updateRepoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 		return nil, err
 	}
 	// name, format and type are fixed after creation
-	repo.Name, repo.Format, repo.Type, repo.CreatedAt = old.Name, old.Format, old.Type, old.CreatedAt
+	repo.Name, repo.Format, repo.Type, repo.CreatedAt, repo.InvalidatedAt = old.Name, old.Format, old.Type, old.CreatedAt, old.InvalidatedAt
 	if repo.RemotePassword == "" && repo.RemoteUsername == old.RemoteUsername {
 		repo.RemotePassword = old.RemotePassword // blank means "unchanged"
 	}
@@ -396,6 +441,9 @@ func (a *App) componentsAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if order == "" {
 		order = "component"
 	}
+	if order != "component" {
+		order += ", component"
+	}
 	where := `WHERE repo=? AND component!='' AND uploader!='system' AND component LIKE ? ESCAPE '\'`
 	args := []any{repo.Name, "%" + likeEscape(r.URL.Query().Get("q")) + "%"}
 	var total int
@@ -404,7 +452,7 @@ func (a *App) componentsAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	}
 	setTotal(w, total)
 	rows, err := a.db.Query(`SELECT component, COUNT(*), SUM(size), SUM(downloads), MAX(updated_at) FROM assets `+where+`
-		GROUP BY component ORDER BY `+order+`, component LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+		GROUP BY component ORDER BY `+order+` LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +532,15 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	if len(files) == 0 {
 		return nil, httpErr{400, "no files selected"}
 	}
-	var stored []string
+	stored := []string{}
+	// apt and yum indexes are rebuilt once for the whole batch, also when a later file is rejected
+	defer func() {
+		if len(stored) > 0 && (repo.Format == "apt" || repo.Format == "yum") {
+			if err := a.reindex(repo.Name); err != nil {
+				log.Printf("upload to %s: rebuilding the index failed: %v", repo.Name, err)
+			}
+		}
+	}()
 	for _, fh := range files {
 		name := path.Base(fh.Filename)
 		f, err := fh.Open()
@@ -494,13 +550,13 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		var x *Asset
 		switch repo.Format {
 		case "apt":
-			x, err = a.ingestDeb(repo, f, u)
+			x, err = a.storeDeb(repo, f, u)
 		case "yum":
 			target := ""
 			if dir != "" {
 				target = path.Join(dir, name)
 			}
-			x, err = a.ingestRPM(repo, f, target, u)
+			x, err = a.storeRPM(repo, f, target, u)
 		case "conda":
 			x, err = a.ingestConda(repo, f, "", u) // subdir and file name come from the package itself
 		default:
@@ -524,7 +580,16 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		}
 		f.Close()
 		if err != nil {
-			return map[string]any{"uploaded": stored}, httpErr{400, name + ": " + err.Error()}
+			code := 400
+			var he httpErr
+			if errors.As(err, &he) {
+				code = he.code
+			}
+			msg := name + ": " + err.Error()
+			if len(stored) > 0 {
+				msg += fmt.Sprintf(" (%d earlier file(s) in this upload were stored)", len(stored))
+			}
+			return nil, httpErr{code, msg}
 		}
 		stored = append(stored, x.Path)
 	}
@@ -567,7 +632,9 @@ func (a *App) invalidateAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if repo.Type != "proxy" {
 		return nil, httpErr{400, "only proxy repositories have a cache"}
 	}
-	if _, err := a.db.Exec(`UPDATE assets SET updated_at=0 WHERE repo=?`, repo.Name); err != nil {
+	// index data cached up to this second counts as stale (see proxyGet); the files keep their dates
+	repo.InvalidatedAt = time.Now().Unix() + 1
+	if err := a.saveRepo(repo); err != nil {
 		return nil, err
 	}
 	a.negCache.Range(func(k, _ any) bool {
@@ -649,13 +716,25 @@ func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(s)
 }
 
+// Every order ends in the row id, so pages are stable, and is served by an index (see migrations).
 var searchSort = map[string]string{
-	"updated": "a.updated_at DESC", "name": "a.component, a.path", "size": "a.size DESC", "downloads": "a.downloads DESC",
+	"updated": "a.updated_at DESC, a.id DESC", "name": "a.component, a.path, a.id",
+	"size": "a.size DESC, a.id DESC", "downloads": "a.downloads DESC, a.id DESC",
+}
+
+// sparseMatches is the number of matches up to which a search reads them all from the index and sorts
+// them. A term that matches more is common enough for a scan in the requested order to fill a page quickly.
+const sparseMatches = 2000
+
+// indexedTerm reports whether the trigram index can answer a substring search for term: it needs three
+// characters, and SQLite only hands a LIKE without ESCAPE to the index.
+func indexedTerm(term string) bool {
+	return utf8.RuneCountInString(term) >= 3 && !strings.ContainsAny(term, "%_\\\n")
 }
 
 func (a *App) searchAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	q := r.URL.Query()
-	repos := a.readableRepos(u)
+	repos, all := a.readable(u)
 	if len(repos) == 0 {
 		setTotal(w, 0)
 		return []*Asset{}, nil
@@ -666,20 +745,64 @@ func (a *App) searchAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		order = searchSort["updated"]
 	}
 	like := "%" + likeEscape(q.Get("q")) + "%"
-	args := append([]any{like, q.Get("repo"), q.Get("format")}, anySlice(repos)...)
+	in, inArgs := repoIn("a.repo", repos, all)
+	args := append([]any{like, q.Get("repo"), q.Get("format")}, inArgs...)
+	// One repository: a small one is read through its own index and sorted; in a large one, walking
+	// the requested order and skipping other repositories fills a page sooner.
+	repoIs := ` AND (?2='' OR a.repo=?2)`
+	if stats, err := a.repoStats(); err == nil && q.Get("repo") != "" && stats[q.Get("repo")].AssetCount < 20000 {
+		repoIs = ` AND a.repo=?2`
+	}
+	filters := repoIs + ` AND (?3='' OR r.format=?3) AND a.path NOT LIKE '%/blobs/sha256:%' AND a.uploader!='system'` + in
+	// Without the index: scan assets in the requested order until the page is full.
 	where := `JOIN repositories r ON r.name=a.repo
-		WHERE (a.path LIKE ?1 ESCAPE '\' OR a.component LIKE ?1 ESCAPE '\')
-		AND (?2='' OR a.repo=?2) AND (?3='' OR r.format=?3)
-		AND a.path NOT LIKE '%/blobs/sha256:%' AND a.uploader!='system'
-		AND a.repo IN (` + placeholders(len(repos)) + `)`
-	if err := a.setCappedTotal(w, "FROM assets a "+where, args...); err != nil {
+		WHERE (?1='%%' OR a.path LIKE ?1 ESCAPE '\' OR a.component LIKE ?1 ESCAPE '\')` + filters
+	count := "FROM assets a " + where
+	if a.searchIndex && indexedTerm(q.Get("q")) {
+		// With it: read matches straight from the substring index (CROSS JOIN pins it as the driving table).
+		count = `FROM assets_fts f CROSS JOIN assets a ON a.id=f.rowid JOIN repositories r ON r.name=a.repo WHERE f.text LIKE ?1` + filters
+		ids, err := a.assetIDs(`SELECT a.id `+count+` LIMIT ?`, append(args, sparseMatches+1)...)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) <= sparseMatches { // few matches: that is all of them; sort them and cut out the page
+			setTotal(w, len(ids))
+			if len(ids) == 0 {
+				return []*Asset{}, nil
+			}
+			list, err := a.queryAssets(`WHERE a.id IN (`+placeholders(len(ids))+`) ORDER BY `+order+` LIMIT ? OFFSET ?`, append(ids, limit, offset)...)
+			if list == nil {
+				list = []*Asset{}
+			}
+			return list, err
+		}
+		// a common term: the scan below fills a page quickly, and the index counts the matches
+	}
+	list, err := a.queryAssets(where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
 		return nil, err
 	}
-	list, err := a.queryAssets(where+` ORDER BY `+order+`, a.id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if list == nil {
 		list = []*Asset{}
 	}
-	return list, err
+	return list, a.setPageTotal(w, len(list), limit, offset, count, args...)
+}
+
+func (a *App) assetIDs(query string, args ...any) ([]any, error) {
+	rows, err := a.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []any
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (a *App) deleteAssetAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
@@ -719,38 +842,44 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		Popular      []*Asset        `json:"popular"`
 		Setup        map[string]bool `json:"setup"`
 	}
-	repos := a.readableRepos(u)
-	s.Repositories = len(repos)
-	// totals cover only repositories the caller can read
-	in := ` AND repo IN (` + placeholders(max(len(repos), 1)) + `)`
-	args := anySlice(append(repos, "")[:max(len(repos), 1)])
 	a.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&s.Users)
-	a.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(downloads),0), COALESCE(SUM(size),0) FROM assets WHERE 1`+in, args...).Scan(&s.Assets, &s.Downloads, &s.LogicalBytes)
-	a.db.QueryRow(`SELECT COALESCE(SUM(size),0) FROM (SELECT MAX(size) AS size FROM assets WHERE 1`+in+` GROUP BY blob)`, args...).Scan(&s.StorageBytes)
-
-	all, _ := a.listRepos()
-	stats, _ := a.repoStats()
+	all, err := a.listRepos()
+	if err != nil {
+		return nil, err
+	}
+	stats, err := a.repoStats()
+	if err != nil {
+		return nil, err
+	}
 	byFormat := map[string]*formatStat{}
 	for _, f := range formats {
 		byFormat[f] = &formatStat{Format: f}
 	}
+	// totals cover only repositories the caller can read
+	var repos []string
 	for _, rp := range all {
 		if !a.can(u, rp, false) {
 			continue
 		}
+		repos = append(repos, rp.Name)
 		fs := byFormat[rp.Format]
 		v := a.view(u, rp, stats)
 		fs.Repos++
 		fs.Assets += v.AssetCount
 		fs.Bytes += v.Size
+		s.Assets, s.Downloads, s.LogicalBytes = s.Assets+v.AssetCount, s.Downloads+v.Downloads, s.LogicalBytes+v.Size
 		if v.Status != "online" || (rp.QuotaMB > 0 && v.Size*10 >= rp.QuotaMB<<20*9) {
 			s.Attention = append(s.Attention, v)
 		}
 	}
+	s.Repositories = len(repos)
 	for _, f := range formats {
 		s.Formats = append(s.Formats, *byFormat[f])
 	}
-	var err error
+	if _, s.StorageBytes, err = a.storedTotals(repos, len(repos) == len(all)); err != nil {
+		return nil, err
+	}
+	in, args := repoIn("repo", repos, len(repos) == len(all))
 	if s.Recent, err = a.queryAssets(`WHERE uploader NOT IN ('proxy','system') AND path NOT LIKE '%/blobs/sha256:%'`+in+` ORDER BY created_at DESC LIMIT 8`, args...); err != nil {
 		return nil, err
 	}
@@ -939,19 +1068,28 @@ func (a *App) getSettingsAPI(w http.ResponseWriter, r *http.Request, u *User) (a
 	return a.settings(), nil
 }
 
+// validSettings normalizes and checks settings from the API or an imported configuration.
+func validSettings(s Settings) (Settings, error) {
+	s.BaseURL = strings.TrimSuffix(strings.TrimSpace(s.BaseURL), "/")
+	if s.BaseURL != "" {
+		if pu, err := url.Parse(s.BaseURL); err != nil || pu.Host == "" || (pu.Scheme != "http" && pu.Scheme != "https") {
+			return s, httpErr{400, "base URL must be absolute, e.g. https://repo.example.com"}
+		}
+	}
+	if s.AuditRetention < 0 {
+		return s, httpErr{400, "retention must not be negative"}
+	}
+	return s, nil
+}
+
 func (a *App) putSettingsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	var s Settings
 	if err := readJSON(r, &s); err != nil {
 		return nil, err
 	}
-	s.BaseURL = strings.TrimSuffix(strings.TrimSpace(s.BaseURL), "/")
-	if s.BaseURL != "" {
-		if pu, err := url.Parse(s.BaseURL); err != nil || pu.Host == "" || (pu.Scheme != "http" && pu.Scheme != "https") {
-			return nil, httpErr{400, "base URL must be absolute, e.g. https://repo.example.com"}
-		}
-	}
-	if s.AuditRetention < 0 {
-		return nil, httpErr{400, "retention must not be negative"}
+	s, err := validSettings(s)
+	if err != nil {
+		return nil, err
 	}
 	if err := a.saveSettings(s); err != nil {
 		return nil, err
@@ -960,19 +1098,20 @@ func (a *App) putSettingsAPI(w http.ResponseWriter, r *http.Request, u *User) (a
 	return s, nil
 }
 
-// auditWhere filters events by ?q= (user, action or target) and ?action= (a prefix).
+// auditWhere filters events by ?q= (user, action or target), ?action= (a prefix) and the time range
+// ?from= (inclusive) to ?to= (exclusive), both Unix seconds; 0 or absent leaves that end open.
 func auditWhere(r *http.Request) (string, []any) {
 	q := r.URL.Query()
-	return `FROM events WHERE (username LIKE ?1 ESCAPE '\' OR action LIKE ?1 ESCAPE '\' OR target LIKE ?1 ESCAPE '\') AND (?2='' OR action LIKE ?2 || '%')`,
-		[]any{"%" + likeEscape(q.Get("q")) + "%", q.Get("action")}
+	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
+	return `FROM events WHERE (?1='%%' OR username LIKE ?1 ESCAPE '\' OR action LIKE ?1 ESCAPE '\' OR target LIKE ?1 ESCAPE '\')
+			AND (?2='' OR action LIKE ?2 || '%') AND (?3<=0 OR ts>=?3) AND (?4<=0 OR ts<?4)`,
+		[]any{"%" + likeEscape(q.Get("q")) + "%", q.Get("action"), from, to}
 }
 
 func (a *App) auditAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	limit, offset := pageParams(r, 1000)
 	from, args := auditWhere(r)
-	if err := a.setCappedTotal(w, from, args...); err != nil {
-		return nil, err
-	}
 	rows, err := a.db.Query(`SELECT id, ts, username, action, target, detail `+from+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
@@ -992,7 +1131,11 @@ func (a *App) auditAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		rows.Scan(&e.ID, &e.TS, &e.Username, &e.Action, &e.Target, &e.Detail)
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return out, a.setPageTotal(w, len(out), limit, offset, from, args...)
 }
 
 // auditExportAPI streams every matching event as CSV, newest first.

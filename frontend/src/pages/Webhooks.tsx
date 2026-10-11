@@ -4,8 +4,8 @@ import {
 import { IconPencil, IconPlus, IconRefresh, IconSend, IconTrash, IconWebhook } from '@tabler/icons-react'
 import { useState } from 'react'
 import { api, useApi, type Repo, type Webhook } from '../api'
-import { EVENT_GROUPS } from '../events'
-import { confirmAction, EmptyState, LoadError, notifyError, notifyOk, PageHeader, timeAgo } from '../util'
+import { WEBHOOK_EVENT_GROUPS } from '../events'
+import { confirmAction, EmptyState, LoadError, notifyError, notifyOk, PageHeader, useValidation, When } from '../util'
 
 
 const verifyExample = `// Node.js: verify a delivery
@@ -60,19 +60,19 @@ export default function Webhooks() {
                       <Group gap="xs"><Text size="sm" fw={500}>{h.name}</Text>{!h.enabled && <Badge size="xs" color="gray">paused</Badge>}</Group>
                       <Text size="xs" c="dimmed" ff="monospace" truncate="end" maw={320}>{h.url}</Text>
                     </Table.Td>
-                    <Table.Td><Text size="sm">{h.events.length ? h.events.join(', ') : 'All events'}</Text></Table.Td>
-                    <Table.Td><Text size="sm">{h.repos.length ? h.repos.join(', ') : 'All repositories'}</Text></Table.Td>
+                    <Table.Td maw={280}><Text size="sm" lineClamp={2}>{h.events.length ? h.events.join(', ') : 'All events'}</Text></Table.Td>
+                    <Table.Td maw={220}><Text size="sm" lineClamp={2}>{h.repos.length ? h.repos.join(', ') : 'All repositories'}</Text></Table.Td>
                     <Table.Td>
                       {h.lastDelivery ? <>
                         <Badge variant="light" color={h.lastStatus.startsWith('2') ? 'teal' : 'red'} radius="sm">{h.lastStatus}</Badge>
-                        <Text size="xs" c="dimmed">{timeAgo(h.lastDelivery)}</Text>
+                        <div><When unix={h.lastDelivery} /></div>
                       </> : <Text size="sm" c="dimmed">Never</Text>}
                     </Table.Td>
                     <Table.Td>
                       <Group gap={4} justify="flex-end" wrap="nowrap">
-                        <Tooltip label="Send test event"><ActionIcon variant="subtle" loading={testing === h.id} onClick={() => test(h)} aria-label="Send test event"><IconSend size={16} /></ActionIcon></Tooltip>
-                        <Tooltip label="Edit"><ActionIcon variant="subtle" color="gray" onClick={() => setEditing(h)} aria-label="Edit webhook"><IconPencil size={16} /></ActionIcon></Tooltip>
-                        <Tooltip label="Delete"><ActionIcon variant="subtle" color="red" onClick={() => remove(h)} aria-label="Delete webhook"><IconTrash size={16} /></ActionIcon></Tooltip>
+                        <Tooltip label="Send test event"><ActionIcon variant="subtle" loading={testing === h.id} onClick={() => test(h)} aria-label={`Send a test event to ${h.name}`}><IconSend size={16} /></ActionIcon></Tooltip>
+                        <Tooltip label="Edit"><ActionIcon variant="subtle" color="gray" onClick={() => setEditing(h)} aria-label={`Edit ${h.name}`}><IconPencil size={16} /></ActionIcon></Tooltip>
+                        <Tooltip label="Delete"><ActionIcon variant="subtle" color="red" onClick={() => remove(h)} aria-label={`Delete ${h.name}`}><IconTrash size={16} /></ActionIcon></Tooltip>
                       </Group>
                     </Table.Td>
                   </Table.Tr>
@@ -98,24 +98,30 @@ function WebhookForm({ hook, onSaved }: { hook?: Webhook; onSaved: () => void })
   const repos = useApi<Repo[]>('/repositories')
   const [h, setH] = useState({ name: hook?.name ?? '', url: hook?.url ?? '', secret: '', events: hook?.events ?? [], repos: hook?.repos ?? [], enabled: hook?.enabled ?? true })
   const [busy, setBusy] = useState(false)
+  const v = useValidation({
+    name: !h.name.trim() && 'Name this webhook, e.g. after the system it calls',
+    url: !h.url.trim() ? 'Enter the URL that receives the events' : !/^https?:\/\/[^/\s]+/i.test(h.url) && 'Start with http:// or https://',
+  })
   const save = () => {
+    if (!v.check()) return
     setBusy(true)
     const req = hook ? api(`/webhooks/${hook.id}`, { method: 'PUT', body: h }) : api('/webhooks', { body: h })
     req.then(() => { notifyOk('Webhook saved'); onSaved() }).catch(notifyError).finally(() => setBusy(false))
   }
   const genSecret = () => setH({ ...h, secret: Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join('') })
   return (
-    <form onSubmit={(e) => { e.preventDefault(); save() }}>
+    <form noValidate onSubmit={(e) => { e.preventDefault(); save() }}>
       <Stack>
-        <TextInput label="Name" required placeholder="e.g. Deploy pipeline" value={h.name} onChange={(e) => setH({ ...h, name: e.currentTarget.value })} />
-        <TextInput label="Payload URL" required placeholder="https://ci.example.com/hooks/repoman" value={h.url} onChange={(e) => setH({ ...h, url: e.currentTarget.value })} />
+        <TextInput label="Name" withAsterisk maxLength={100} data-autofocus placeholder="e.g. Deploy pipeline" value={h.name} onChange={(e) => setH({ ...h, name: e.currentTarget.value })} error={v.error('name')} />
+        <TextInput label="Payload URL" withAsterisk placeholder="https://ci.example.com/hooks/repoman" inputMode="url" autoCapitalize="none" spellCheck={false}
+          value={h.url} onChange={(e) => setH({ ...h, url: e.currentTarget.value.trim() })} error={v.error('url')} />
         <Group align="flex-end" wrap="nowrap">
           <PasswordInput flex={1} label="Signing secret" placeholder={hook?.hasSecret ? 'Leave blank to keep the current secret' : 'Recommended'}
             description="Used to compute the X-RepoMan-Signature header." value={h.secret} onChange={(e) => setH({ ...h, secret: e.currentTarget.value })} visible={h.secret.length > 0 && h.secret.length === 48} />
           <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={genSecret}>Generate</Button>
         </Group>
-        <MultiSelect label="Events" placeholder={h.events.length ? '' : 'All events'} data={EVENT_GROUPS} value={h.events} onChange={(events) => setH({ ...h, events })} searchable clearable
-          description="Leave empty to receive every event." />
+        <MultiSelect label="Events" placeholder={h.events.length ? '' : 'All events'} data={WEBHOOK_EVENT_GROUPS} value={h.events} onChange={(events) => setH({ ...h, events })} searchable clearable
+          description="Leave empty to receive every event." comboboxProps={{ withinPortal: true }} />
         <MultiSelect label="Repositories" placeholder={h.repos.length ? '' : 'All repositories'} data={repos.data?.map((r) => r.name) ?? []} value={h.repos}
           onChange={(rs) => setH({ ...h, repos: rs })} searchable clearable description="Only events about these repositories. Leave empty for all." />
         <Switch label="Active" checked={h.enabled} onChange={(e) => setH({ ...h, enabled: e.currentTarget.checked })} />

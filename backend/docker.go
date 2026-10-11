@@ -25,6 +25,7 @@ var (
 	reBlob     = regexp.MustCompile(`^(.+)/blobs/(sha256:[0-9a-f]{64})$`)
 	reManifest = regexp.MustCompile(`^(.+)/manifests/([A-Za-z0-9_.:-]{1,128})$`)
 	reTags     = regexp.MustCompile(`^(.+)/tags/list$`)
+	reDigest   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 func dockerErr(w http.ResponseWriter, status int, code, msg string) {
@@ -148,6 +149,10 @@ func (a *App) dockerUpload(w http.ResponseWriter, r *http.Request, repo *Repo, n
 	q := r.URL.Query()
 	location := func(id string) string { return "/v2/" + name + "/blobs/uploads/" + id }
 	finish := func(digest string, body io.Reader) {
+		if !reDigest.MatchString(digest) {
+			dockerErr(w, 400, "DIGEST_INVALID", "the digest parameter must be sha256:<64 hex digits>")
+			return
+		}
 		if _, err := a.putAsset(repo.Name, image+"/blobs/"+digest, body, assetMeta{
 			ContentType: "application/octet-stream", Component: image, Uploader: u.Username,
 			WantSHA: strings.TrimPrefix(digest, "sha256:"),

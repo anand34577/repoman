@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 )
@@ -76,7 +78,16 @@ func (a *App) runTask(id string) error {
 	a.tasksMu.Unlock()
 
 	start := time.Now()
-	result, err := def.run(a)
+	result, err := func() (res string, err error) {
+		// tasks run on their own goroutines: a panic here would otherwise take the whole server down
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("task %s panicked: %v\n%s", id, p, debug.Stack())
+				err = fmt.Errorf("internal error: %v", p)
+			}
+		}()
+		return def.run(a)
+	}()
 	a.tasksMu.Lock()
 	st.Running, st.LastRun, st.DurationMs, st.Result, st.Error = false, start.Unix(), time.Since(start).Milliseconds(), result, ""
 	if err != nil {
@@ -117,6 +128,9 @@ func (a *App) listTasksAPI(w http.ResponseWriter, r *http.Request, u *User) (any
 
 func (a *App) runTaskAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
 	id := r.PathValue("id")
+	if !slices.ContainsFunc(taskDefs, func(t taskDef) bool { return t.ID == id }) {
+		return nil, errNotFound
+	}
 	a.tasksMu.Lock()
 	running := a.tasks[id] != nil && a.tasks[id].Running
 	a.tasksMu.Unlock()
@@ -132,6 +146,7 @@ func (a *App) runTaskAPI(w http.ResponseWriter, r *http.Request, u *User) (any, 
 
 // cleanupCandidates returns what a repository's cleanup policy would delete (generated indexes excluded).
 func (a *App) cleanupCandidates(r *Repo) ([]*Asset, error) {
+	a.flushDownloads() // "unused for N days" must see downloads that are still only counted in memory
 	var out []*Asset
 	seen := map[int64]bool{}
 	add := func(list []*Asset) {
@@ -337,6 +352,11 @@ func (a *App) reindexAll() (string, error) {
 }
 
 func (a *App) optimizeDB() (string, error) {
+	if a.searchIndex { // merge the search index's segments; cheap when there is little to merge
+		if _, err := a.db.Exec(`INSERT INTO assets_fts(assets_fts) VALUES('optimize')`); err != nil {
+			return "", err
+		}
+	}
 	if _, err := a.db.Exec(`VACUUM`); err != nil {
 		return "", err
 	}

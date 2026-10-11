@@ -18,7 +18,7 @@ import {
 import { formatInfo } from '../formats'
 import { clientGuides, repoUrl } from '../setup'
 import {
-  confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, Pager, StatusBadge, timeAgo, TypeBadge, usePaging,
+  confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, Pager, plural, StatusBadge, timeAgo, TypeBadge, usePaging, useUnsavedGuard, When,
 } from '../util'
 import { RepoSettingsFields } from './RepoConfig'
 import { downloadUrl } from '../links'
@@ -57,11 +57,11 @@ export default function RepoDetail() {
         <Group gap={4}><IconArrowLeft size={14} />Repositories</Group>
       </Anchor>
       <Group justify="space-between" mt="xs" mb="md" align="flex-start">
-        <Group align="flex-start" wrap="nowrap">
-          <ThemeIcon size={48} radius="md" variant="light" color={formatInfo(r.format).color}><FIcon size={28} /></ThemeIcon>
-          <div>
+        <Group align="flex-start" wrap="nowrap" style={{ minWidth: 0 }}>
+          <ThemeIcon size={48} radius="md" variant="light" color={formatInfo(r.format).color} style={{ flexShrink: 0 }}><FIcon size={28} /></ThemeIcon>
+          <div style={{ minWidth: 0 }}>
             <Group gap="xs">
-              <Title order={2}>{r.name}</Title>
+              <Title order={2} style={{ wordBreak: 'break-word' }}>{r.name}</Title>
               <FormatBadge format={r.format} />
               <TypeBadge type={r.type} />
               <StatusBadge repo={r} />
@@ -69,8 +69,8 @@ export default function RepoDetail() {
               {r.access === 'read' && <Badge variant="outline" color="gray">read-only for you</Badge>}
             </Group>
             {r.description && <Text c="dimmed" size="sm">{r.description}</Text>}
-            <Group gap={4} mt={4}>
-              <Text ff="monospace" size="sm">{url}</Text>
+            <Group gap={4} mt={4} wrap="nowrap">
+              <Text ff="monospace" size="sm" style={{ wordBreak: 'break-all' }}>{url}</Text>
               <Copy value={url} label="Copy URL" />
             </Group>
           </div>
@@ -101,7 +101,7 @@ export default function RepoDetail() {
       {r.offline && <Alert color="gray" icon={<IconPlayerPause />} mb="md">This repository is offline: clients receive “503 Service Unavailable”.</Alert>}
 
       <Tabs value={tab} onChange={(t) => navigate(`/repositories/${name}/${t === 'browse' ? '' : t}`)} keepMounted={false}>
-        <Tabs.List mb="md">
+        <Tabs.List mb="md" className="tabs-scroll">
           <Tabs.Tab value="browse" leftSection={<IconFolderOpen size={16} />}>Browse</Tabs.Tab>
           <Tabs.Tab value="components" leftSection={<IconPackage size={16} />}>Components</Tabs.Tab>
           <Tabs.Tab value="setup" leftSection={<IconWand size={16} />}>Setup</Tabs.Tab>
@@ -175,11 +175,11 @@ function RepoActions({ repo, onChanged, onDeleted }: { repo: Repo; onChanged: ()
                 {preview.sample.map((a) => <Table.Tr key={a.id}><Table.Td ff="monospace" style={{ wordBreak: 'break-all' }}>{a.path}</Table.Td><Table.Td>{formatBytes(a.size)}</Table.Td><Table.Td>{timeAgo(Math.max(a.lastDownloaded, a.updatedAt))}</Table.Td></Table.Tr>)}
               </Table.Tbody>
             </Table>
-            {preview.count > preview.sample.length && <Text size="xs" c="dimmed">…and {preview.count - preview.sample.length} more.</Text>}
+            {preview.count > preview.sample.length && <Text size="xs" c="dimmed">…and {(preview.count - preview.sample.length).toLocaleString()} more.</Text>}
             <Group justify="flex-end">
               <Button variant="default" onClick={() => setPreview(undefined)}>Cancel</Button>
               <Button color="red" loading={cleaning} onClick={() => { setCleaning(true); api<{ deleted: number }>(`/repositories/${repo.name}/cleanup`, { method: 'POST' })
-                .then((res) => { notifyOk(`Deleted ${res.deleted} artifacts`); setPreview(undefined); onChanged() }).catch(notifyError).finally(() => setCleaning(false)) }}>
+                .then((res) => { notifyOk(`Deleted ${plural(res.deleted, 'artifact')}`); setPreview(undefined); onChanged() }).catch(notifyError).finally(() => setCleaning(false)) }}>
                 Delete {preview.count.toLocaleString()} artifacts
               </Button>
             </Group>
@@ -230,15 +230,15 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
             ? <Text size="sm" key={i} fw={500} aria-current="page">{p}</Text>
             : <Anchor component="button" type="button" size="sm" key={i} onClick={() => go(parts.slice(0, i + 1).join('/'))}>{p}</Anchor>)}
         </Breadcrumbs>
-        <Group gap="xs">
-          <TextInput size="xs" placeholder="Filter this folder" aria-label="Filter this folder" leftSection={<IconSearch size={14} />} value={filter} onChange={(e) => { setFilter(e.currentTarget.value); paging.setPage(1, true) }} />
+        <Group gap="xs" wrap="nowrap" style={{ flex: '1 1 220px', justifyContent: 'flex-end' }} maw={{ sm: 360 }}>
+          <TextInput size="xs" placeholder="Filter this folder" aria-label="Filter this folder" leftSection={<IconSearch size={14} />} value={filter} onChange={(e) => { setFilter(e.currentTarget.value); paging.setPage(1, true) }} style={{ flex: 1 }} miw={140} />
           {canUpload && <Button size="xs" leftSection={<IconUpload size={14} />} onClick={() => setUploading(true)}>Upload</Button>}
         </Group>
       </Group>
-      <Table.ScrollContainer minWidth={600}>
+      <Table.ScrollContainer minWidth={300}>
         <Table highlightOnHover verticalSpacing="xs" horizontalSpacing="md" style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
           <Table.Thead>
-            <Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th>Updated</Table.Th><Table.Th ta="right">Downloads</Table.Th></Table.Tr>
+            <Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th visibleFrom="sm">Updated</Table.Th><Table.Th ta="right" visibleFrom="sm">Downloads</Table.Th></Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {path && (
@@ -255,9 +255,9 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
                     {e.asset?.uploader === 'system' && <Tooltip label="Generated automatically"><Badge size="xs" variant="light" color="gray">index</Badge></Tooltip>}
                   </Group>
                 </Table.Td>
-                <Table.Td ta="right"><Text size="sm" c="dimmed">{e.folder ? `${e.count} files · ${formatBytes(e.size)}` : formatBytes(e.asset!.size)}</Text></Table.Td>
-                <Table.Td><Text size="sm" c="dimmed">{e.asset && timeAgo(e.asset.updatedAt)}</Text></Table.Td>
-                <Table.Td ta="right"><Text size="sm" c="dimmed">{e.asset?.downloads}</Text></Table.Td>
+                <Table.Td ta="right"><Text size="sm" c="dimmed" style={{ whiteSpace: 'nowrap' }}>{e.folder ? `${plural(e.count ?? 0, 'file')} · ${formatBytes(e.size)}` : formatBytes(e.asset!.size)}</Text></Table.Td>
+                <Table.Td visibleFrom="sm">{e.asset && <When unix={e.asset.updatedAt} never="—" />}</Table.Td>
+                <Table.Td ta="right" visibleFrom="sm"><Text size="sm" c="dimmed">{e.asset?.downloads.toLocaleString()}</Text></Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>
@@ -368,10 +368,10 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
       setProgress(undefined)
       let body: { uploaded?: string[]; error?: string } = {}
       try { body = JSON.parse(req.responseText) } catch { /* non-JSON error page */ }
-      if (req.status >= 200 && req.status < 300) { notifyOk(`Uploaded ${body.uploaded?.length ?? 0} file(s)`); onClose(); onDone(); return }
+      if (req.status >= 200 && req.status < 300) { notifyOk(`Uploaded ${plural(body.uploaded?.length ?? 0, 'file')}`); onClose(); onDone(); return }
       if (req.status === 401) window.dispatchEvent(new Event('rm:unauthorized'))
-      notifyError(new Error(body.error ?? `Upload failed (${req.status} ${req.statusText})`))
-      if (body.uploaded?.length) onDone() // earlier files in the batch were stored
+      notifyError(new Error(body.error ?? (req.status === 413 ? 'The upload is larger than the server or a proxy in front of it accepts' : `Upload failed (${req.status} ${req.statusText})`)))
+      if (files.length > 1) onDone() // files before the rejected one were stored
     }
     req.onerror = () => { setProgress(undefined); notifyError(new Error('Upload failed — check your connection and try again')) }
     req.onabort = () => setProgress(undefined)
@@ -388,7 +388,7 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
           <TextInput label={upload.dir.label} placeholder={upload.dir.placeholder} description={upload.dir.description} value={target}
             onChange={(e) => setTarget(e.currentTarget.value)} />
         )}
-        <Dropzone onDrop={(f) => setFiles((cur) => [...cur, ...f])} multiple disabled={busy}
+        <Dropzone onDrop={(f) => setFiles((cur) => [...cur, ...f.filter((x) => !cur.some((c) => c.name === x.name && c.size === x.size))])} multiple disabled={busy}
           validator={(f) => upload.accept && !upload.accept.some((ext) => f.name.endsWith(ext)) ? { code: 'type', message: `Only ${upload.accept.join(', ')} files` } : null}
           onReject={(r) => notifyError(new Error(`${r.length} file(s) skipped: ${r[0]?.errors[0]?.message}`))}>
           <Stack align="center" gap={4} py="lg" style={{ pointerEvents: 'none' }}>
@@ -419,10 +419,10 @@ function UploadModal({ opened, repo, dir, onClose, onDone }: { opened: boolean; 
           </Stack>
         )}
         <Group justify="space-between">
-          <Text size="xs" c="dimmed">{files.length > 0 && `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalBytes)}`}</Text>
+          <Text size="xs" c="dimmed">{files.length > 0 && `${plural(files.length, 'file')} · ${formatBytes(totalBytes)}`}</Text>
           <Group gap="xs">
             <Button variant="default" onClick={close}>{busy ? 'Cancel upload' : 'Cancel'}</Button>
-            <Button onClick={submit} loading={busy} disabled={!files.length}>Upload {files.length || ''} file{files.length === 1 ? '' : 's'}</Button>
+            <Button onClick={submit} loading={busy} disabled={!files.length}>{files.length ? `Upload ${plural(files.length, 'file')}` : 'Upload'}</Button>
           </Group>
         </Group>
       </Stack>
@@ -451,7 +451,7 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
     title: v ? `Delete ${c} ${v}?` : `Delete all versions of ${c}?`, danger: true, label: 'Delete',
     body: v ? 'All files of this version are removed.' : 'Every version and file of this component is removed.',
     onConfirm: () => api<{ deleted: number }>(`/repositories/${repo.name}/components?component=${encodeURIComponent(c)}${v ? `&version=${encodeURIComponent(v)}` : ''}`, { method: 'DELETE' })
-      .then((r) => { notifyOk(`Deleted ${r.deleted} files`); reload(); onChanged() }).catch(notifyError),
+      .then((r) => { notifyOk(`Deleted ${plural(r.deleted, 'file')}`); reload(); onChanged() }).catch(notifyError),
   })
 
   if (repo.type === 'group') return (
@@ -483,7 +483,7 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
                   <Table.Td ta="right">{c.versions.length}</Table.Td>
                   <Table.Td ta="right">{formatBytes(c.size)}</Table.Td>
                   <Table.Td ta="right">{c.downloads.toLocaleString()}</Table.Td>
-                  <Table.Td><Text size="sm" c="dimmed">{timeAgo(c.updatedAt)}</Text></Table.Td>
+                  <Table.Td><When unix={c.updatedAt} never="—" /></Table.Td>
                   <Table.Td onClick={(e) => e.stopPropagation()}>
                     {canWrite && <Tooltip label="Delete component"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name)} aria-label="Delete component"><IconTrash size={16} /></ActionIcon></Tooltip>}
                   </Table.Td>
@@ -491,11 +491,11 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
                 {open === c.name && (allVersions ? c.versions : c.versions.slice(0, VERSIONS_SHOWN)).map((v) => (
                   <Table.Tr key={v.version} bg="var(--mantine-color-default-hover)">
                     <Table.Td />
-                    <Table.Td colSpan={2}><Group gap="xs"><Text size="sm" ff="monospace">{v.version}</Text><Text size="xs" c="dimmed">{v.assets} files</Text></Group></Table.Td>
+                    <Table.Td colSpan={2}><Group gap="xs"><Text size="sm" ff="monospace">{v.version}</Text><Text size="xs" c="dimmed">{plural(v.assets, 'file')}</Text></Group></Table.Td>
                     <Table.Td />
                     <Table.Td ta="right">{formatBytes(v.size)}</Table.Td>
                     <Table.Td ta="right">{v.downloads.toLocaleString()}</Table.Td>
-                    <Table.Td><Text size="sm" c="dimmed">{timeAgo(v.updatedAt)}</Text></Table.Td>
+                    <Table.Td><When unix={v.updatedAt} never="—" /></Table.Td>
                     <Table.Td>{canWrite && <Tooltip label="Delete version"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name, v.version)} aria-label="Delete version"><IconTrash size={16} /></ActionIcon></Tooltip>}</Table.Td>
                   </Table.Tr>
                 ))}
@@ -609,6 +609,7 @@ function AccessTab({ repo }: { repo: Repo }) {
   const filterBy = (fn: () => void) => { fn(); paging.setPage(1, true) }
   const saved = Object.fromEntries((perms.data ?? []).map((p) => [p.username, p.level]))
   const dirty = Object.keys({ ...saved, ...draft }).some((k) => (draft[k] ?? 'inherit') !== (saved[k] ?? 'inherit'))
+  useUnsavedGuard(dirty)
 
   const save = () => {
     setBusy(true)
@@ -675,6 +676,7 @@ function Configuration({ repo, onSaved }: { repo: Repo; onSaved: () => void }) {
   const [busy, setBusy] = useState(false)
   useEffect(() => setR(repo), [repo])
   const dirty = JSON.stringify(r) !== JSON.stringify(repo)
+  useUnsavedGuard(dirty)
   const save = () => {
     setBusy(true)
     api<Repo>(`/repositories/${repo.name}`, { method: 'PUT', body: r })

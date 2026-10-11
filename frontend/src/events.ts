@@ -7,7 +7,12 @@ export const EVENT_GROUPS = [
     group: 'Security', items: ['login', 'login.failed', 'login.lockout', 'oidc.login', 'oidc.login.failed', 'oidc.link', 'oidc.unlink', 'password.change', 'password.reset',
       'user.create', 'user.update', 'user.delete', 'token.create', 'token.delete', 'settings.update', 'config.import', 'config.export'],
   },
+  { group: 'Administration', items: ['task.run', 'webhook.create', 'webhook.update', 'webhook.delete'] },
 ]
+
+/** Webhooks also hear about changes to notification channels, which channels never report about themselves. */
+export const WEBHOOK_EVENT_GROUPS = EVENT_GROUPS.map((g) => g.group === 'Administration'
+  ? { ...g, items: [...g.items, 'notifier.create', 'notifier.update', 'notifier.delete'] } : g)
 
 const problems = ['repository.degraded', 'repository.recovered', 'repository.quota', 'task.failed', 'login.lockout']
 const publishing = ['npm.publish', 'pypi.upload', 'docker.push', 'go.upload', 'apt.upload', 'yum.upload', 'conda.upload']

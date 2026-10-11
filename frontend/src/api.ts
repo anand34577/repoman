@@ -141,48 +141,104 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+interface Response<T> { data: T; total?: number; text: string }
+
+async function request<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<Response<T>> {
+  const isForm = opts.body instanceof FormData
+  const method = opts.method ?? (opts.body ? 'POST' : 'GET')
+  if (method !== 'GET') inflight.clear() // a read that started before this change must not answer for one after it
+  let res: globalThis.Response
+  try {
+    res = await fetch('/api' + path, {
+      method,
+      credentials: 'same-origin',
+      headers: opts.body && !isForm ? { 'Content-Type': 'application/json' } : undefined,
+      body: isForm ? (opts.body as FormData) : opts.body ? JSON.stringify(opts.body) : undefined,
+    })
+  } catch {
+    throw new ApiError(0, "Can't reach the server. Check your connection and try again.")
+  } finally {
+    if (method !== 'GET') inflight.clear()
+  }
+  if (res.status === 204) return { data: undefined as T, text: '' }
+  const text = await res.text().catch(() => '')
+  let data: any = {}
+  try { data = JSON.parse(text) } catch { /* an error page from a proxy in front of RepoMan */ }
+  if (!res.ok) {
+    if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('rm:unauthorized'))
+    throw new ApiError(res.status, data.error ?? (res.statusText || `The server answered ${res.status}`))
+  }
+  const total = res.headers.get('X-Total-Count')
+  return { data: data as T, total: total === null ? undefined : Number(total), text }
+}
+
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
-  return (await apiWithTotal<T>(path, opts)).data
+  return (await request<T>(path, opts)).data
 }
 
 /** Like api, plus the X-Total-Count header that paged list endpoints send (capped at 10,001). */
 export async function apiWithTotal<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<{ data: T; total?: number }> {
-  const isForm = opts.body instanceof FormData
-  const res = await fetch('/api' + path, {
-    method: opts.method ?? (opts.body ? 'POST' : 'GET'),
-    credentials: 'same-origin',
-    headers: opts.body && !isForm ? { 'Content-Type': 'application/json' } : undefined,
-    body: isForm ? (opts.body as FormData) : opts.body ? JSON.stringify(opts.body) : undefined,
-  })
-  if (res.status === 204) return { data: undefined as T }
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('rm:unauthorized'))
-    throw new ApiError(res.status, data.error ?? res.statusText)
+  return request<T>(path, opts)
+}
+
+/*
+ * The last answer to each GET, so a page that was open before paints at once while its fresh copy loads
+ * (stale-while-revalidate). Data is never served from here without also being fetched again. Signing in
+ * or out empties it: one account's data must never flash on another account's screen.
+ */
+const CACHE_ENTRIES = 150
+const cache = new Map<string, Response<unknown> & { seq: number }>()
+const inflight = new Map<string, Promise<Response<unknown>>>()
+let seq = 0
+
+export function clearApiCache() { cache.clear(); inflight.clear() }
+
+/** `fresh` starts a new request even when one for the same path is already on its way. */
+function load<T>(path: string, fresh: boolean): Promise<Response<T>> {
+  let p = fresh ? undefined : inflight.get(path)
+  if (!p) {
+    const mine = ++seq
+    p = request(path).then((r) => {
+      const prev = cache.get(path)
+      if (prev && prev.seq > mine) return prev // a newer answer got here first
+      // an unchanged answer keeps its object identity: no re-render, and forms built from it are left alone
+      const entry = prev && prev.text === r.text ? { ...prev, total: r.total, seq: mine } : { ...r, seq: mine }
+      cache.delete(path)
+      cache.set(path, entry)
+      if (cache.size > CACHE_ENTRIES) cache.delete(cache.keys().next().value!)
+      return entry
+    }, (e) => { cache.delete(path); throw e }).finally(() => { if (inflight.get(path) === p) inflight.delete(path) })
+    inflight.set(path, p)
   }
-  const total = res.headers.get('X-Total-Count')
-  return { data: data as T, total: total === null ? undefined : Number(total) }
+  return p as Promise<Response<T>>
 }
 
 /**
  * Fetches `path` on mount and whenever it changes; `reload` re-runs it. Pass null to skip.
- * Previous data stays visible while the next page loads, and responses that arrive out of order are dropped.
+ * Data seen before is shown immediately and refreshed in the background, previous data stays visible while
+ * the next page loads, and responses that arrive out of order are dropped.
  */
 export function useApi<T>(path: string | null) {
-  const [data, setData] = useState<T>()
-  const [total, setTotal] = useState<number>()
+  const hit = () => (path === null ? undefined : cache.get(path)) as Response<T> | undefined
+  const [data, setData] = useState<T | undefined>(() => hit()?.data)
+  const [total, setTotal] = useState<number | undefined>(() => hit()?.total)
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(path !== null)
   const latest = useRef(0)
-  const reload = useCallback(() => {
+  const run = useCallback((fresh: boolean) => {
     if (path === null) return Promise.resolve()
     const id = ++latest.current
     setLoading(true)
-    return apiWithTotal<T>(path)
+    return load<T>(path, fresh)
       .then((r) => { if (id === latest.current) { setData(r.data); setTotal(r.total); setError(undefined) } })
       .catch((e: Error) => { if (id === latest.current) setError(e.message) })
       .finally(() => { if (id === latest.current) setLoading(false) })
   }, [path])
-  useEffect(() => { reload() }, [reload])
+  const reload = useCallback(() => run(true), [run])
+  useEffect(() => {
+    const seen = hit()
+    if (seen) { setData(seen.data); setTotal(seen.total) }
+    run(false)
+  }, [run]) // eslint-disable-line react-hooks/exhaustive-deps
   return { data, total, error, loading, reload, setData }
 }
