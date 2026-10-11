@@ -911,12 +911,15 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		fs := byFormat[rp.Format]
 		v := a.view(u, rp, stats)
 		fs.Repos++
-		fs.Assets += v.AssetCount
-		fs.Bytes += v.Size
-		s.Assets, s.Downloads, s.LogicalBytes = s.Assets+v.AssetCount, s.Downloads+v.Downloads, s.LogicalBytes+v.Size
 		if v.Status != "online" || (rp.QuotaMB > 0 && v.Size*10 >= rp.QuotaMB<<20*9) {
 			s.Attention = append(s.Attention, v)
 		}
+		if rp.Type == "group" { // a group holds nothing itself; its members are counted on their own
+			continue
+		}
+		fs.Assets += v.AssetCount
+		fs.Bytes += v.Size
+		s.Assets, s.Downloads, s.LogicalBytes = s.Assets+v.AssetCount, s.Downloads+v.Downloads, s.LogicalBytes+v.Size
 	}
 	s.Repositories = len(repos)
 	for _, f := range formats {
