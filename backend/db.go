@@ -520,9 +520,12 @@ func (a *App) downloadFlusher() {
 	}
 }
 
-// slowStat caches an aggregate over the assets table. It is recomputed once assets have changed, but
-// at most every 20× the time it takes to compute: instant totals are always exact, and one that needs
-// half a second on a very large database is refreshed every ten seconds instead of on every page view.
+// slowStat caches an aggregate over the assets table. One that is cheap to compute is recomputed as
+// soon as assets have changed, so it is always exact. One that is expensive (slowStatCost or more) is
+// recomputed at most every 20× the time it takes: half a second on a very large database means a
+// refresh every ten seconds instead of on every page view.
+const slowStatCost = 25 * time.Millisecond
+
 type slowStat[T any] struct {
 	mu   sync.Mutex
 	key  string
@@ -536,7 +539,7 @@ type slowStat[T any] struct {
 func (s *slowStat[T]) get(key string, gen int64, compute func() (T, error)) (T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.ok && s.key == key && (s.gen == gen || time.Since(s.at) < min(20*s.cost, 30*time.Second)) {
+	if s.ok && s.key == key && (s.gen == gen || (s.cost >= slowStatCost && time.Since(s.at) < min(20*s.cost, 30*time.Second))) {
 		return s.val, nil
 	}
 	start := time.Now()
