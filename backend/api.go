@@ -894,6 +894,11 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		StorageBytes int64           `json:"storageBytes"` // deduplicated
 		LogicalBytes int64           `json:"logicalBytes"`
 		Users        int             `json:"users"`
+		Types        map[string]int  `json:"types"`       // repositories per type
+		Statuses     map[string]int  `json:"statuses"`    // repositories per status (online, degraded, offline)
+		HostedBytes  int64           `json:"hostedBytes"` // what people published
+		CachedBytes  int64           `json:"cachedBytes"` // what proxies copied from upstream
+		Daily        []dayCount      `json:"downloadsDaily"`
 		Formats      []formatStat    `json:"formats"`
 		Attention    []repoView      `json:"attention"` // offline/degraded/near quota
 		Recent       []*Asset        `json:"recent"`
@@ -909,6 +914,7 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 	if err != nil {
 		return nil, err
 	}
+	s.Types, s.Statuses = map[string]int{}, map[string]int{}
 	byFormat := map[string]*formatStat{}
 	for _, f := range formats {
 		byFormat[f] = &formatStat{Format: f}
@@ -923,6 +929,8 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		fs := byFormat[rp.Format]
 		v := a.view(u, rp, stats)
 		fs.Repos++
+		s.Types[rp.Type]++
+		s.Statuses[v.Status]++
 		if v.Status != "online" || (rp.QuotaMB > 0 && v.Size*10 >= rp.QuotaMB<<20*9) {
 			s.Attention = append(s.Attention, v)
 		}
@@ -932,6 +940,11 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		fs.Assets += v.AssetCount
 		fs.Bytes += v.Size
 		s.Assets, s.Downloads, s.LogicalBytes = s.Assets+v.AssetCount, s.Downloads+v.Downloads, s.LogicalBytes+v.Size
+		if rp.Type == "proxy" {
+			s.CachedBytes += v.Size
+		} else {
+			s.HostedBytes += v.Size
+		}
 	}
 	s.Repositories = len(repos)
 	for _, f := range formats {
@@ -941,6 +954,21 @@ func (a *App) statsAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 		return nil, err
 	}
 	in, args := repoIn("repo", repos, len(repos) == len(all))
+	days := map[int64]int64{}
+	since := time.Now().Unix()/86400 - 29
+	dq := `SELECT day, SUM(n) FROM downloads_daily WHERE day>=? GROUP BY day`
+	if in != "" { // only the repositories the caller can read
+		dq = `SELECT d.day, SUM(d.n) FROM downloads_daily d JOIN assets a ON a.id=d.asset_id WHERE d.day>=?` + strings.ReplaceAll(in, "repo", "a.repo") + ` GROUP BY d.day`
+	}
+	if rows, err := a.db.Query(dq, append([]any{since}, args...)...); err == nil {
+		for rows.Next() {
+			var d, n int64
+			rows.Scan(&d, &n)
+			days[d] = n
+		}
+		rows.Close()
+	}
+	s.Daily = fillDays(days, 30)
 	if s.Recent, err = a.queryAssets(`WHERE uploader NOT IN ('proxy','system') AND path NOT LIKE '%/blobs/sha256:%'`+in+` ORDER BY created_at DESC LIMIT 8`, args...); err != nil {
 		return nil, err
 	}

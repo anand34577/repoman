@@ -9,6 +9,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - Formats: Rust / Cargo (sparse registry), Dart / Flutter (pub), Hugging Face, Git LFS and Alpine (apk).
 
+### Changed
+
+- The dashboard is grouped into overview, health and activity, storage and artifacts. New: the repository mix by type,
+  status counts, downloads over the last 30 days, and how much storage is your own artifacts versus proxy caches.
+  Formats that are set up but still empty no longer fill the storage list with empty bars.
+
 ### Fixed
 
 - The dashboard counted a group's artifacts and bytes on top of its members', so a group of a 100 MB proxy and a

@@ -147,6 +147,11 @@ export interface Stats {
   storageBytes: number
   logicalBytes: number
   users: number
+  types: Partial<Record<RepoType, number>>
+  statuses: Partial<Record<'online' | 'degraded' | 'offline', number>>
+  hostedBytes: number
+  cachedBytes: number
+  downloadsDaily: { day: string; n: number }[]
   formats: { format: Format; repos: number; assets: number; bytes: number }[]
   attention: Repo[] | null
   recent: Asset[]
