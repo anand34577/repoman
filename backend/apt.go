@@ -75,6 +75,15 @@ func (a *App) aptHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p s
 
 // ingestDeb stores an uploaded .deb under pool/ and rebuilds the signed indexes.
 func (a *App) ingestDeb(repo *Repo, body io.Reader, u *User) (*Asset, error) {
+	x, err := a.storeDeb(repo, body, u)
+	if err != nil {
+		return nil, err
+	}
+	return x, a.aptReindex(repo)
+}
+
+// storeDeb is ingestDeb without the index rebuild, for callers that store several packages.
+func (a *App) storeDeb(repo *Repo, body io.Reader, u *User) (*Asset, error) {
 	tmp, sha, size, err := a.blobs.Write(body)
 	if err != nil {
 		return nil, err
@@ -102,7 +111,7 @@ func (a *App) ingestDeb(repo *Repo, body io.Reader, u *User) (*Asset, error) {
 		return nil, err
 	}
 	a.audit(u, "apt.upload", repo.Name+"/"+p)
-	return x, a.aptReindex(repo)
+	return x, nil
 }
 
 func poolPrefix(pkg string) string {

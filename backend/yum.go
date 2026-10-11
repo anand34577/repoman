@@ -92,6 +92,15 @@ func (a *App) yumHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p s
 }
 
 func (a *App) ingestRPM(repo *Repo, body io.Reader, target string, u *User) (*Asset, error) {
+	x, err := a.storeRPM(repo, body, target, u)
+	if err != nil {
+		return nil, err
+	}
+	return x, a.yumReindex(repo)
+}
+
+// storeRPM is ingestRPM without the repodata rebuild, for callers that store several packages.
+func (a *App) storeRPM(repo *Repo, body io.Reader, target string, u *User) (*Asset, error) {
 	tmp, sha, size, err := a.blobs.Write(body)
 	if err != nil {
 		return nil, err
@@ -117,7 +126,7 @@ func (a *App) ingestRPM(repo *Repo, body io.Reader, target string, u *User) (*As
 		return nil, err
 	}
 	a.audit(u, "yum.upload", repo.Name+"/"+target)
-	return x, a.yumReindex(repo)
+	return x, nil
 }
 
 // ---------- RPM header parsing ----------
@@ -183,7 +192,7 @@ func (h *rpmHeader) ints(tag int32) []int64 {
 		return nil
 	}
 	size := map[int32]int{3: 2, 4: 4, 5: 8}[e[0]]
-	if size == 0 || int(e[1])+size*int(e[2]) > len(h.store) || e[1] < 0 {
+	if size == 0 || e[1] < 0 || e[2] < 0 || int(e[1])+size*int(e[2]) > len(h.store) {
 		return nil
 	}
 	out := make([]int64, e[2])

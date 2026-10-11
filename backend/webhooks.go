@@ -139,8 +139,12 @@ func (a *App) saveWebhookAPI(w http.ResponseWriter, r *http.Request, u *User) (a
 			q = `UPDATE webhooks SET name=?, url=?, events=?, repos=?, enabled=?, secret=? WHERE id=?`
 			args = []any{h.Name, h.URL, string(ev), string(rp), h.Enabled, h.Secret, id}
 		}
-		if _, err := a.db.Exec(q, args...); err != nil {
+		res, err := a.db.Exec(q, args...)
+		if err != nil {
 			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, errNotFound
 		}
 		a.audit(u, "webhook.update", h.Name)
 		return nil, nil
@@ -161,8 +165,12 @@ func nonNil(s []string) []string {
 }
 
 func (a *App) deleteWebhookAPI(w http.ResponseWriter, r *http.Request, u *User) (any, error) {
-	if _, err := a.db.Exec(`DELETE FROM webhooks WHERE id=?`, r.PathValue("id")); err != nil {
+	res, err := a.db.Exec(`DELETE FROM webhooks WHERE id=?`, r.PathValue("id"))
+	if err != nil {
 		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, errNotFound
 	}
 	a.audit(u, "webhook.delete", r.PathValue("id"))
 	return nil, nil

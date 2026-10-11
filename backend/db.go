@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -38,8 +40,6 @@ CREATE TABLE IF NOT EXISTS assets (
 	downloads INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(repo, path)
 );
-CREATE INDEX IF NOT EXISTS assets_blob ON assets(blob);
-CREATE INDEX IF NOT EXISTS assets_component ON assets(repo, component);
 CREATE TABLE IF NOT EXISTS users (
 	username TEXT PRIMARY KEY,
 	password_hash TEXT NOT NULL,
@@ -120,6 +120,64 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS assets_updated ON assets(updated_at)`,
 	`CREATE INDEX IF NOT EXISTS assets_created ON assets(created_at)`,               // dashboard "recently published"
 	`CREATE INDEX IF NOT EXISTS assets_repo_stats ON assets(repo, size, downloads)`, // index-only per-repo totals
+	// covering indexes: the Components tab, folder sizes in Browse, "most downloaded" and "recently published"
+	// read these alone instead of visiting every asset row (seconds on repositories with 100,000+ artifacts)
+	`CREATE INDEX IF NOT EXISTS assets_components ON assets(repo, component, uploader, size, downloads, updated_at)`,
+	`DROP INDEX IF EXISTS assets_component`, // a prefix of assets_components
+	`CREATE INDEX IF NOT EXISTS assets_path_size ON assets(repo, path, size)`,
+	`CREATE INDEX IF NOT EXISTS assets_downloads ON assets(downloads)`,
+	`CREATE INDEX IF NOT EXISTS assets_published ON assets(created_at) WHERE uploader NOT IN ('proxy','system')`,
+	// "storage used" walks distinct content files: from this index alone, in order, instead of one row
+	// lookup per artifact (seconds on a large database that is not in the file cache yet)
+	`CREATE INDEX IF NOT EXISTS assets_blob_size ON assets(blob, size, repo)`,
+	`DROP INDEX IF EXISTS assets_blob`,                                  // a prefix of assets_blob_size
+	`CREATE INDEX IF NOT EXISTS assets_name ON assets(component, path)`, // search sorted by name
+	`CREATE INDEX IF NOT EXISTS assets_size ON assets(size)`,            // search sorted by size
+}
+
+// searchSchema is the substring index behind artifact search: an FTS5 trigram index over
+// "<path>\n<component>", kept in step with the assets table by triggers. It stores no copy of the text
+// (external content, detail=none); matches are verified against the assets table.
+const searchSchema = `
+CREATE VIEW IF NOT EXISTS assets_search AS SELECT id, path || char(10) || component AS text FROM assets;
+CREATE VIRTUAL TABLE assets_fts USING fts5(text, content='assets_search', content_rowid='id', tokenize='trigram', detail='none');
+CREATE TRIGGER IF NOT EXISTS assets_fts_insert AFTER INSERT ON assets BEGIN
+	INSERT INTO assets_fts(rowid, text) VALUES(new.id, new.path || char(10) || new.component);
+END;
+CREATE TRIGGER IF NOT EXISTS assets_fts_delete AFTER DELETE ON assets BEGIN
+	INSERT INTO assets_fts(assets_fts, rowid, text) VALUES('delete', old.id, old.path || char(10) || old.component);
+END;
+CREATE TRIGGER IF NOT EXISTS assets_fts_update AFTER UPDATE OF path, component ON assets
+WHEN old.path IS NOT new.path OR old.component IS NOT new.component BEGIN
+	INSERT INTO assets_fts(assets_fts, rowid, text) VALUES('delete', old.id, old.path || char(10) || old.component);
+	INSERT INTO assets_fts(rowid, text) VALUES(new.id, new.path || char(10) || new.component);
+END;
+INSERT INTO assets_fts(assets_fts) VALUES('rebuild');
+`
+
+// ensureSearchIndex creates and fills the search index on the first start with this version. Search
+// works without it (by scanning), so a failure here is reported and not fatal.
+func ensureSearchIndex(db *sql.DB) bool {
+	var n int
+	if db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='assets_fts'`).Scan(&n) == nil && n > 0 {
+		return true
+	}
+	db.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n)
+	if n > 50000 {
+		log.Printf("building the search index for %d artifacts (once; about 20 seconds per million)", n)
+	}
+	tx, err := db.Begin()
+	if err == nil {
+		defer tx.Rollback()
+		if _, err = tx.Exec(searchSchema); err == nil {
+			err = tx.Commit()
+		}
+	}
+	if err != nil {
+		log.Printf("search index unavailable, searches will scan instead: %v", err)
+		return false
+	}
+	return true
 }
 
 func openDB(file string) (*sql.DB, error) {
@@ -163,6 +221,7 @@ type Repo struct {
 	CleanupDays    int      `json:"cleanupDays"`            // delete assets not downloaded for N days; 0 = off
 	RetainVersions int      `json:"retainVersions"`         // keep only the newest N versions per component; 0 = off
 	CreatedAt      int64    `json:"createdAt"`
+	InvalidatedAt  int64    `json:"invalidatedAt,omitempty"` // proxy: index data cached before this moment is stale
 }
 
 func (a *App) getRepo(name string) (*Repo, error) {
@@ -356,6 +415,7 @@ func (a *App) upsertLocked(repo, p, sha string, size int64, m assetMeta) (*Asset
 	var old string
 	a.db.QueryRow(`SELECT blob FROM assets WHERE repo=? AND path=?`, repo, p).Scan(&old)
 	now := time.Now().Unix()
+	a.assetGen.Add(1)
 	_, err := a.db.Exec(`INSERT INTO assets(repo, path, blob, size, content_type, component, version, uploader, attrs, created_at, updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(repo, path) DO UPDATE SET blob=excluded.blob, size=excluded.size, content_type=excluded.content_type,
@@ -380,6 +440,7 @@ func (a *App) deleteAssets(where string, args ...any) ([]*Asset, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.assetGen.Add(1)
 	for _, x := range list {
 		if _, err := a.db.Exec(`DELETE FROM assets WHERE id=?`, x.ID); err != nil {
 			return nil, err
@@ -411,8 +472,80 @@ func (a *App) gcLocked(sha string) {
 	}
 }
 
+// dlCount is the not yet written part of an asset's download counter.
+type dlCount struct{ n, last int64 }
+
+// markDownloaded counts a download in memory. Counters are written in batches (flushDownloads), so
+// serving a file never waits for the database's single writer: a busy CI farm pulling cached
+// artifacts would otherwise queue every download behind one UPDATE each.
 func (a *App) markDownloaded(id int64) {
-	a.db.Exec(`UPDATE assets SET downloads=downloads+1, last_downloaded=? WHERE id=?`, time.Now().Unix(), id)
+	a.dlMu.Lock()
+	c := a.dlPending[id]
+	a.dlPending[id] = dlCount{c.n + 1, time.Now().Unix()}
+	a.dlMu.Unlock()
+}
+
+// flushDownloads writes the pending download counters in one transaction.
+func (a *App) flushDownloads() {
+	a.dlMu.Lock()
+	pending := a.dlPending
+	a.dlPending = map[int64]dlCount{}
+	a.dlMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return // shutting down
+	}
+	defer tx.Rollback()
+	for id, c := range pending {
+		if _, err := tx.Exec(`UPDATE assets SET downloads=downloads+?, last_downloaded=? WHERE id=?`, c.n, c.last, id); err != nil {
+			log.Printf("recording downloads: %v", err)
+			return
+		}
+	}
+	if tx.Commit() == nil {
+		a.assetGen.Add(1)
+	}
+}
+
+// downloadFlusher writes download counters every couple of seconds until the database is closed.
+func (a *App) downloadFlusher() {
+	for range time.Tick(2 * time.Second) {
+		if a.db.Ping() != nil {
+			return
+		}
+		a.flushDownloads()
+	}
+}
+
+// slowStat caches an aggregate over the assets table. It is recomputed once assets have changed, but
+// at most every 20× the time it takes to compute: instant totals are always exact, and one that needs
+// half a second on a very large database is refreshed every ten seconds instead of on every page view.
+type slowStat[T any] struct {
+	mu   sync.Mutex
+	key  string
+	gen  int64
+	at   time.Time
+	cost time.Duration
+	val  T
+	ok   bool
+}
+
+func (s *slowStat[T]) get(key string, gen int64, compute func() (T, error)) (T, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ok && s.key == key && (s.gen == gen || time.Since(s.at) < min(20*s.cost, 30*time.Second)) {
+		return s.val, nil
+	}
+	start := time.Now()
+	v, err := compute()
+	if err != nil {
+		return v, err
+	}
+	s.key, s.gen, s.at, s.cost, s.val, s.ok = key, gen, time.Now(), time.Since(start), v, true
+	return v, nil
 }
 
 func (a *App) readAsset(x *Asset) ([]byte, error) {

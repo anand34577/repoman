@@ -167,7 +167,7 @@ Deletes the repository **and all its artifacts**, and removes it from every grou
 |---|---|
 | `POST /repositories/{name}/cleanup?dryRun=1` | Preview the cleanup policy: `{"count": 12, "size": 48211003, "sample": [ …up to 50 artifacts… ]}` |
 | `POST /repositories/{name}/cleanup` | Run it: `{"deleted": 12, "size": 48211003}`. 400 if no policy is configured |
-| `POST /repositories/{name}/invalidate` | Proxy only: re-check index data on next use, forget cached "not found" answers, retry the upstream now |
+| `POST /repositories/{name}/invalidate` | Proxy only: re-check index data on next use, forget cached "not found" answers, retry the upstream now. Cached files and their dates are kept |
 | `POST /repositories/{name}/reindex` | Rebuild generated metadata (APT/YUM indexes, npm package documents) |
 
 ## Browse and search
@@ -356,10 +356,12 @@ Task ids: `cleanup`, `purge`, `blob-compact`, `optimize-db`, `blob-verify`, `reb
 
 ## Audit log
 
-`GET /audit?q=<text>&action=<prefix>` · admin — matching events, newest first; paged, default limit 1000.
+`GET /audit?q=<text>&action=<prefix>&from=<unix>&to=<unix>` · admin — matching events, newest first; paged,
+default limit 1000. `from` (inclusive) and `to` (exclusive) limit the period, in Unix seconds; leave either
+out, or pass 0, for an open end.
 `q` matches user, action or target; `action` is a prefix such as `login` or `repository.`.
 
-`GET /audit/export?q=<text>&action=<prefix>` · admin — every matching event as CSV
+`GET /audit/export?q=<text>&action=<prefix>&from=<unix>&to=<unix>` · admin — every matching event as CSV
 (`time,user,action,target,detail`, times in UTC).
 
 ```json

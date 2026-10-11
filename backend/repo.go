@@ -43,7 +43,8 @@ const negativeCacheTTL = 5 * time.Minute
 // proxyGet serves from cache; metadata is re-fetched after MetadataTTL, falling back to stale cache if upstream fails.
 func (a *App) proxyGet(ctx context.Context, repo *Repo, p string, hdr http.Header) (*Asset, error) {
 	cached, err := a.findAsset(repo.Name, p)
-	if err == nil && !(isMetadata(repo.Format, p) && time.Since(time.Unix(cached.UpdatedAt, 0)) > time.Duration(repo.MetadataTTL)*time.Minute) {
+	if err == nil && !(isMetadata(repo.Format, p) && (cached.UpdatedAt < repo.InvalidatedAt ||
+		time.Since(time.Unix(cached.UpdatedAt, 0)) > time.Duration(repo.MetadataTTL)*time.Minute)) {
 		return cached, nil
 	}
 	negKey := repo.Name + "\x00" + p

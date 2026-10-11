@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,8 +21,11 @@ func (a *App) systemInfoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 			dbBytes += st.Size()
 		}
 	}
-	var blobs, blobBytes, assets int64
-	a.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size),0) FROM (SELECT MAX(size) AS size FROM assets GROUP BY blob)`).Scan(&blobs, &blobBytes)
+	var assets int64
+	blobs, blobBytes, err := a.storedTotals(nil, true)
+	if err != nil {
+		return nil, err
+	}
 	a.db.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&assets)
 	abs, _ := filepath.Abs(a.dataDir)
 	_, fp, _ := a.publicKey()
@@ -39,8 +43,10 @@ func (a *App) systemInfoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 }
 
 // metrics exposes Prometheus text metrics; requires any authenticated user (e.g. basic auth with a token).
+// Per-repository series cover the repositories that user may read.
 func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
-	if a.authenticate(r) == nil {
+	u := a.authenticate(r)
+	if u == nil {
 		deny(w, nil)
 		return
 	}
@@ -51,21 +57,24 @@ func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
 	for i := 1; i < len(a.requests); i++ {
 		fmt.Fprintf(w, "repoman_http_responses_total{class=\"%dxx\"} %d\n", i, a.requests[i].Load())
 	}
-	rows, err := a.db.Query(`SELECT r.name, r.format, r.type, COUNT(a.id), COALESCE(SUM(a.size),0), COALESCE(SUM(a.downloads),0)
-		FROM repositories r LEFT JOIN assets a ON a.repo=r.name GROUP BY r.name`)
+	repos, err := a.listRepos()
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	stats, err := a.repoStats()
+	if err != nil {
+		return
+	}
 	var assets, bytes, downloads strings.Builder
-	for rows.Next() {
-		var name, format, typ string
-		var n, b, d int64
-		rows.Scan(&name, &format, &typ, &n, &b, &d)
-		labels := fmt.Sprintf(`{repository=%q,format=%q,type=%q}`, name, format, typ)
-		fmt.Fprintf(&assets, "repoman_repository_assets%s %d\n", labels, n)
-		fmt.Fprintf(&bytes, "repoman_repository_bytes%s %d\n", labels, b)
-		fmt.Fprintf(&downloads, "repoman_repository_downloads_total%s %d\n", labels, d)
+	for _, rp := range repos {
+		if !a.can(u, rp, false) {
+			continue
+		}
+		v := stats[rp.Name]
+		labels := fmt.Sprintf(`{repository=%q,format=%q,type=%q}`, rp.Name, rp.Format, rp.Type)
+		fmt.Fprintf(&assets, "repoman_repository_assets%s %d\n", labels, v.AssetCount)
+		fmt.Fprintf(&bytes, "repoman_repository_bytes%s %d\n", labels, v.Size)
+		fmt.Fprintf(&downloads, "repoman_repository_downloads_total%s %d\n", labels, v.Downloads)
 	}
 	fmt.Fprintf(w, "# TYPE repoman_repository_assets gauge\n%s# TYPE repoman_repository_bytes gauge\n%s# TYPE repoman_repository_downloads_total counter\n%s",
 		assets.String(), bytes.String(), downloads.String())
@@ -144,14 +153,17 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		return doc.Repositories[i].Type != "group" && doc.Repositories[j].Type == "group"
 	})
 	for _, rp := range doc.Repositories {
+		if rp == nil {
+			continue
+		}
 		old, err := a.getRepo(rp.Name)
 		if err == nil {
-			rp.Format, rp.Type, rp.CreatedAt = old.Format, old.Type, old.CreatedAt
+			rp.Format, rp.Type, rp.CreatedAt, rp.InvalidatedAt = old.Format, old.Type, old.CreatedAt, old.InvalidatedAt
 			if rp.RemotePassword == "" {
 				rp.RemotePassword = old.RemotePassword
 			}
 		} else {
-			rp.CreatedAt = time.Now().Unix()
+			rp.CreatedAt, rp.InvalidatedAt = time.Now().Unix(), 0
 		}
 		if err := a.validateRepo(rp); err != nil {
 			report["errors"] = append(report["errors"], rp.Name+": "+err.Error())
@@ -169,6 +181,9 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		}
 	}
 	for _, x := range doc.Users {
+		if x == nil {
+			continue
+		}
 		var exists int
 		a.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username=?`, x.Username).Scan(&exists)
 		if exists > 0 {
@@ -182,6 +197,10 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		report["usersNeedingPassword"] = append(report["usersNeedingPassword"], x.Username)
 	}
 	for _, p := range doc.Permissions {
+		if !slices.Contains([]string{accessNone, accessRead, accessWrite}, p.Level) {
+			report["errors"] = append(report["errors"], fmt.Sprintf("permission %s/%s: level must be none, read or write", p.Repo, p.Username))
+			continue
+		}
 		if _, err := a.db.Exec(`INSERT INTO repo_perms(repo, username, level) VALUES(?,?,?) ON CONFLICT(repo, username) DO UPDATE SET level=excluded.level`,
 			p.Repo, p.Username, p.Level); err != nil {
 			report["errors"] = append(report["errors"], fmt.Sprintf("permission %s/%s: %v", p.Repo, p.Username, err))
@@ -189,6 +208,9 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	}
 	existing, _ := a.webhooks("")
 	for _, h := range doc.Webhooks {
+		if h == nil {
+			continue
+		}
 		dup := false
 		for _, e := range existing {
 			dup = dup || (e.Name == h.Name && e.URL == h.URL)
@@ -204,6 +226,9 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	// tokens are never exported, so imported channels start paused until a token is entered
 	channels, _ := a.notifiers("")
 	for _, n := range doc.Notifiers {
+		if n == nil {
+			continue
+		}
 		dup := notifierKinds[n.Kind] == nil
 		for _, e := range channels {
 			dup = dup || (e.Name == n.Name && e.URL == n.URL)
@@ -217,8 +242,13 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		}
 	}
 	if doc.Version != "" {
-		a.saveSettings(doc.Settings)
-		report["updated"] = append(report["updated"], "settings")
+		if s, err := validSettings(doc.Settings); err != nil {
+			report["errors"] = append(report["errors"], "settings: "+err.Error())
+		} else if err := a.saveSettings(s); err != nil {
+			report["errors"] = append(report["errors"], "settings: "+err.Error())
+		} else {
+			report["updated"] = append(report["updated"], "settings")
+		}
 	}
 	a.audit(u, "config.import", "system", len(report["created"]), "created", len(report["updated"]), "updated")
 	return report, nil

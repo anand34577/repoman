@@ -60,7 +60,7 @@ func (a *App) npmPackument(w http.ResponseWriter, r *http.Request, repo *Repo, n
 	prefix := a.baseURL(r) + "/repository/" + repo.Name + "/" + name + "/-/"
 	versions, _ := doc["versions"].(map[string]any)
 	for _, v := range versions {
-		if dist, ok := v.(map[string]any)["dist"].(map[string]any); ok {
+		if dist := npmDist(v); dist != nil {
 			if tb, ok := dist["tarball"].(string); ok {
 				dist["tarball"] = prefix + path.Base(tb)
 			}
@@ -100,8 +100,11 @@ func (a *App) npmPublish(w http.ResponseWriter, r *http.Request, repo *Repo, nam
 			writeJSON(w, http.StatusForbidden, errBody("cannot publish over existing version "+v))
 			return
 		}
-		var vm any
-		json.Unmarshal(raw, &vm)
+		var vm map[string]any
+		if json.Unmarshal(raw, &vm) != nil || vm == nil {
+			writeJSON(w, 400, errBody("invalid publish request: version "+v+" is not an object"))
+			return
+		}
 		versions[v], times[v], ver = vm, now, v
 	}
 	for t, v := range body.DistTags {
@@ -133,6 +136,14 @@ func (a *App) npmPublish(w http.ResponseWriter, r *http.Request, repo *Repo, nam
 	}
 	a.audit(u, "npm.publish", repo.Name+"/"+name, ver)
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+// npmDist returns the "dist" object of one packument version, or nil. Packuments come from publishers
+// and upstream registries, so nothing about their shape is taken for granted.
+func npmDist(version any) map[string]any {
+	v, _ := version.(map[string]any)
+	dist, _ := v["dist"].(map[string]any)
+	return dist
 }
 
 func subMap(doc map[string]any, key string) map[string]any {
@@ -183,10 +194,7 @@ func (a *App) npmPrune(repo *Repo) error {
 		versions, tags, times := subMap(doc, "versions"), subMap(doc, "dist-tags"), subMap(doc, "time")
 		changed := false
 		for v, raw := range versions {
-			tb := ""
-			if dist, ok := raw.(map[string]any)["dist"].(map[string]any); ok {
-				tb, _ = dist["tarball"].(string)
-			}
+			tb, _ := npmDist(raw)["tarball"].(string)
 			if _, err := a.findAsset(repo.Name, name+"/-/"+path.Base(tb)); err != nil {
 				delete(versions, v)
 				delete(times, v)
@@ -207,7 +215,7 @@ func (a *App) npmPrune(repo *Repo) error {
 			}
 		}
 		for t, v := range tags {
-			if _, ok := versions[v.(string)]; !ok {
+			if name, _ := v.(string); versions[name] == nil {
 				delete(tags, t)
 			}
 		}

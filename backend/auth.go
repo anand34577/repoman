@@ -138,15 +138,18 @@ func (a *App) verifyPassword(name, pass string) *User {
 func (a *App) userByToken(tok string) *User {
 	h, now := hashToken(tok), time.Now().Unix()
 	var scope string
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, t.scope FROM tokens t JOIN users u ON u.username=t.username
-		WHERE t.hash=? AND (t.expires_at=0 OR t.expires_at>?) AND u.disabled=0`, h, now), &scope)
+	var lastUsed int64
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, t.scope, t.last_used FROM tokens t JOIN users u ON u.username=t.username
+		WHERE t.hash=? AND (t.expires_at=0 OR t.expires_at>?) AND u.disabled=0`, h, now), &scope, &lastUsed)
 	if err != nil {
 		return nil
 	}
 	if scope != scopeFull {
 		u.Scope = scope
 	}
-	a.db.Exec(`UPDATE tokens SET last_used=? WHERE hash=? AND last_used<?`, now, h, now-60)
+	if lastUsed < now-60 { // once a minute is plenty; clients authenticate on every request
+		a.db.Exec(`UPDATE tokens SET last_used=? WHERE hash=?`, now, h)
+	}
 	return u
 }
 
@@ -224,14 +227,20 @@ func (a *App) can(u *User, r *Repo, write bool) bool {
 
 // readableRepos lists repository names the caller may read.
 func (a *App) readableRepos(u *User) []string {
+	out, _ := a.readable(u)
+	return out
+}
+
+// readable is readableRepos, plus whether that is every repository (so queries need no filter).
+func (a *App) readable(u *User) (names []string, all bool) {
 	repos, _ := a.listRepos()
-	out := []string{}
+	names = []string{}
 	for _, r := range repos {
 		if a.can(u, r, false) {
-			out = append(out, r.Name)
+			names = append(names, r.Name)
 		}
 	}
-	return out
+	return names, len(names) == len(repos)
 }
 
 // deny answers 401 with a Basic challenge for anonymous callers, else 403.
@@ -576,8 +585,10 @@ func (a *App) api(role string, f apiFunc) http.HandlerFunc {
 		case errors.Is(err, errNotFound), errors.Is(err, sql.ErrNoRows):
 			writeJSON(w, 404, errBody("not found"))
 		case err != nil:
-			log.Printf("api %s %s: %v", r.Method, r.URL.Path, err)
-			writeJSON(w, 500, errBody(err.Error()))
+			// database and file-system errors can name paths and statements: they belong in the log
+			ref := randomHex(4)
+			log.Printf("api %s %s: %v (error %s)", r.Method, r.URL.Path, err, ref)
+			writeJSON(w, 500, errBody("Internal error. Details are in the server log; search it for "+ref+"."))
 		case res == written:
 		case res == nil:
 			w.WriteHeader(204)
