@@ -345,3 +345,18 @@ func TestPagination(t *testing.T) {
 		t.Fatalf("audit csv: %s", b)
 	}
 }
+
+// A group stores nothing itself; its browse, components and totals must show what its members hold.
+func TestGroupShowsMembers(t *testing.T) {
+	e := newEnv(t)
+	e.must("upload", 201, "PUT", "/repository/raw-hosted/dir/a.txt", strings.NewReader("hello"), admin)
+	e.must("group", 200, "POST", "/api/repositories", jsonBody(map[string]any{"name": "raw-all", "format": "raw", "type": "group", "members": []string{"raw-hosted"}}), admin)
+	if b := e.must("browse", 200, "GET", "/api/repositories/raw-all/browse", nil, admin); !strings.Contains(b, `"dir"`) {
+		t.Fatalf("group browse is empty: %s", b)
+	}
+	e.must("deep link", 200, "GET", "/api/repositories/raw-all/asset?path=dir/a.txt", nil, admin)
+	if b := e.must("repo", 200, "GET", "/api/repositories/raw-all", nil, admin); !strings.Contains(b, `"assetCount":1`) {
+		t.Fatalf("group totals: %s", b)
+	}
+	e.must("components", 200, "GET", "/api/repositories/raw-all/components", nil, admin)
+}

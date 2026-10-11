@@ -1,12 +1,12 @@
-import { Anchor, Card, Group, Loader, Select, Skeleton, Table, Text, TextInput } from '@mantine/core'
+import { ActionIcon, Anchor, Badge, Button, Card, Group, Loader, Popover, Select, Skeleton, Table, Text, TextInput } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { IconSearch, IconSearchOff } from '@tabler/icons-react'
+import { IconBookmark, IconSearch, IconSearchOff, IconX } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useApi, type Asset, type Repo } from '../api'
+import { api, useApi, type Asset, type Repo, type SavedSearch } from '../api'
 import { FORMATS } from '../formats'
-import { EmptyState, formatBytes, FormatBadge, LoadError, MAX_COUNT, PageHeader, Pager, usePaging, When } from '../util'
-import { assetLink } from '../links'
+import { EmptyState, formatBytes, FormatBadge, LoadError, MAX_COUNT, notifyError, notifyOk, PageHeader, Pager, usePaging, When } from '../util'
+import { assetLink, packageLink } from '../links'
 
 const sorts = [
   { value: 'updated', label: 'Recently updated' }, { value: 'name', label: 'Name' },
@@ -32,6 +32,14 @@ export default function Search() {
   }, { replace: true })
 
   const repos = useApi<Repo[]>('/repositories')
+  const saved = useApi<SavedSearch[]>('/saved-searches')
+  const [saving, setSaving] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  // a saved search is the URL's filters without paging
+  const currentQuery = (() => { const c = new URLSearchParams(params); c.delete('page'); c.delete('size'); return c.toString() })()
+  const save = () => api('/saved-searches', { body: { name: saveName.trim(), query: currentQuery } })
+    .then(() => { notifyOk(`Saved “${saveName.trim()}”`); setSaving(false); setSaveName(''); saved.reload() }).catch(notifyError)
+  const forget = (s: SavedSearch) => api(`/saved-searches/${s.id}`, { method: 'DELETE' }).then(saved.reload).catch(notifyError)
   const qs = new URLSearchParams({ q: dq, repo: repo ?? '', format: format ?? '', sort })
   const { data, total, loading, error, reload } = useApi<Asset[]>(`/search?${qs}&${paging.query}`)
   const formatOf = Object.fromEntries((repos.data ?? []).map((r) => [r.name, r.format]))
@@ -40,7 +48,7 @@ export default function Search() {
     <>
       <PageHeader title="Search" description="Find artifacts by name, path or component across every repository you can read." />
       <Group mb="md" align="flex-end" gap="sm">
-        <TextInput flex={1} miw={240} placeholder="e.g. lodash, com.acme, nginx" aria-label="Search artifacts" leftSection={<IconSearch size={16} />}
+        <TextInput flex={1} miw={240} placeholder="e.g. lodash, com.acme:lib, version:1.2 repo:releases, sha256:ab12…" aria-label="Search artifacts" leftSection={<IconSearch size={16} />}
           rightSection={loading && data ? <Loader size="xs" /> : null} value={q} autoFocus
           onChange={(e) => { setQ(e.currentTarget.value); update('q', e.currentTarget.value) }} />
         <Select placeholder="All formats" aria-label="Filter by format" clearable value={format} onChange={(v) => update('format', v)}
@@ -49,6 +57,26 @@ export default function Search() {
           data={repos.data?.map((r) => r.name) ?? []} w={{ base: '100%', xs: 220 }} limit={100} nothingFoundMessage="No repository" />
         <Select aria-label="Sort results" value={sort} allowDeselect={false} onChange={(v) => update('sort', v === 'updated' ? null : v)}
           data={sorts} w={{ base: '100%', xs: 180 }} />
+      </Group>
+      <Group gap="xs" mb="sm" align="center">
+        <Popover opened={saving} onChange={setSaving} width={280} position="bottom-start" withArrow trapFocus>
+          <Popover.Target>
+            <Button size="compact-sm" variant="default" leftSection={<IconBookmark size={14} />} disabled={!currentQuery} onClick={() => setSaving((o) => !o)}>Save this search</Button>
+          </Popover.Target>
+          <Popover.Dropdown>
+            <form onSubmit={(e) => { e.preventDefault(); if (saveName.trim()) save() }}>
+              <TextInput label="Name" placeholder="e.g. Unreleased builds" data-autofocus value={saveName} onChange={(e) => setSaveName(e.currentTarget.value)} maxLength={80} />
+              <Button type="submit" size="xs" mt="xs" fullWidth disabled={!saveName.trim()}>Save</Button>
+            </form>
+          </Popover.Dropdown>
+        </Popover>
+        {saved.data?.map((s) => (
+          <Badge key={s.id} size="lg" variant={s.query === currentQuery ? 'filled' : 'light'} radius="sm" style={{ textTransform: 'none', cursor: 'pointer' }}
+            rightSection={<ActionIcon size="xs" variant="transparent" color="inherit" aria-label={`Delete saved search ${s.name}`} onClick={(e) => { e.stopPropagation(); forget(s) }}><IconX size={12} /></ActionIcon>}
+            onClick={() => setParams(new URLSearchParams(s.query))} role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter') setParams(new URLSearchParams(s.query)) }}>{s.name}</Badge>
+        ))}
+        <Text size="xs" c="dimmed" ml="auto">Operators: <code>version:</code> <code>repo:</code> <code>format:</code> <code>uploader:</code> <code>sha256:</code></Text>
       </Group>
       <LoadError error={error} retry={reload} />
       {total !== undefined && total > 0 && (
@@ -66,9 +94,9 @@ export default function Search() {
               {!data && loading && Array.from({ length: 5 }, (_, i) => <Table.Tr key={i}><Table.Td colSpan={6}><Skeleton h={20} /></Table.Td></Table.Tr>)}
               {data?.map((a) => (
                 <Table.Tr key={a.id}>
-                  <Table.Td><Anchor component={Link} to={assetLink(a)} size="sm" fw={500}>{a.component || a.path.split('/').pop()}</Anchor></Table.Td>
+                  <Table.Td><Anchor component={Link} to={a.component ? packageLink(a.repo, a.component, a.version) : assetLink(a)} size="sm" fw={500}>{a.component || a.path.split('/').pop()}</Anchor></Table.Td>
                   <Table.Td><Text size="sm">{a.version || '—'}</Text></Table.Td>
-                  <Table.Td><Text size="xs" ff="monospace" c="dimmed" style={{ wordBreak: 'break-all' }}>{a.path}</Text></Table.Td>
+                  <Table.Td><Anchor component={Link} to={assetLink(a)} size="xs" ff="monospace" c="dimmed" style={{ wordBreak: 'break-all' }}>{a.path}</Anchor></Table.Td>
                   <Table.Td>
                     <Group gap={6} wrap="nowrap">
                       {formatOf[a.repo] && <FormatBadge format={formatOf[a.repo]} />}

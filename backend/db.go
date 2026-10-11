@@ -133,6 +133,24 @@ var migrations = []string{
 	`DROP INDEX IF EXISTS assets_blob`,                                  // a prefix of assets_blob_size
 	`CREATE INDEX IF NOT EXISTS assets_name ON assets(component, path)`, // search sorted by name
 	`CREATE INDEX IF NOT EXISTS assets_size ON assets(size)`,            // search sorted by size
+	// what each package descriptor declares it depends on (see indexDeps): "who uses this?"
+	`CREATE TABLE IF NOT EXISTS deps (
+		asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+		repo TEXT NOT NULL, component TEXT NOT NULL, version TEXT NOT NULL,
+		dep TEXT NOT NULL, dep_version TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT '', optional INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE INDEX IF NOT EXISTS deps_dep ON deps(dep)`,
+	`CREATE INDEX IF NOT EXISTS deps_asset ON deps(asset_id)`,
+	// downloads per artifact per UTC day, only for days with downloads
+	`CREATE TABLE IF NOT EXISTS downloads_daily (
+		asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, day INTEGER NOT NULL, n INTEGER NOT NULL,
+		PRIMARY KEY (asset_id, day)) WITHOUT ROWID`,
+	// one row per repository per day (repo '' = the whole installation's distinct bytes on disk), for growth charts
+	`CREATE TABLE IF NOT EXISTS storage_samples (
+		day INTEGER NOT NULL, repo TEXT NOT NULL, assets INTEGER NOT NULL, bytes INTEGER NOT NULL, downloads INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (day, repo)) WITHOUT ROWID`,
+	`CREATE TABLE IF NOT EXISTS saved_searches (
+		id INTEGER PRIMARY KEY, username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+		name TEXT NOT NULL, query TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 }
 
 // searchSchema is the substring index behind artifact search: an FTS5 trigram index over
@@ -274,6 +292,37 @@ func (a *App) members(g *Repo) []*Repo {
 		}
 	}
 	return out
+}
+
+// holders returns the repositories whose assets make up r: r itself, or for a group its stored members (nested groups expanded).
+func (a *App) holders(r *Repo) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(*Repo)
+	walk = func(g *Repo) {
+		if seen[g.Name] {
+			return
+		}
+		seen[g.Name] = true
+		if g.Type != "group" {
+			out = append(out, g.Name)
+			return
+		}
+		for _, m := range a.members(g) {
+			walk(m)
+		}
+	}
+	walk(r)
+	return out
+}
+
+// repoIs is a SQL condition (no leading AND) matching assets held by r or, for a group, its members.
+func (a *App) repoIs(r *Repo) (string, []any) {
+	names := a.holders(r)
+	if len(names) == 0 {
+		return "0", nil
+	}
+	return "repo IN (" + placeholders(len(names)) + ")", anySlice(names)
 }
 
 func (a *App) repoSize(name string) (n int64) {
@@ -428,7 +477,11 @@ func (a *App) upsertLocked(repo, p, sha string, size int64, m assetMeta) (*Asset
 	if old != "" && old != sha {
 		a.gcLocked(old)
 	}
-	return a.findAsset(repo, p)
+	x, err := a.findAsset(repo, p)
+	if err == nil && indexableDescriptor(p) {
+		a.indexDeps(x)
+	}
+	return x, err
 }
 
 // deleteAssets removes matching assets and garbage-collects blobs nobody references anymore.
@@ -502,6 +555,12 @@ func (a *App) flushDownloads() {
 	for id, c := range pending {
 		if _, err := tx.Exec(`UPDATE assets SET downloads=downloads+?, last_downloaded=? WHERE id=?`, c.n, c.last, id); err != nil {
 			log.Printf("recording downloads: %v", err)
+			return
+		}
+		// the same count per day, for the artifact's download chart (skipped when the asset was just deleted)
+		if _, err := tx.Exec(`INSERT INTO downloads_daily(asset_id, day, n) SELECT id, ?, ? FROM assets WHERE id=?
+			ON CONFLICT(asset_id, day) DO UPDATE SET n=n+excluded.n`, c.last/86400, c.n, id); err != nil {
+			log.Printf("recording daily downloads: %v", err)
 			return
 		}
 	}

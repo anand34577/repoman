@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -34,13 +33,19 @@ var taskDefs = []taskDef{
 	{"cleanup", "Run cleanup policies", "Applies every repository's cleanup policy: delete assets unused for N days and keep only the newest N versions per component.", time.Hour, (*App).cleanupAll},
 	{"purge", "Purge expired data", "Deletes expired sessions and tokens, abandoned Docker uploads, and audit events past the retention period.", time.Hour, (*App).purge},
 	{"blob-compact", "Compact blob store", "Removes content files that no asset references (e.g. after a crash) and stale temporary files.", 24 * time.Hour, (*App).compactBlobs},
+	{"storage-snapshot", "Record storage usage", "Stores each repository's size once a day so the Storage page can chart growth, and trims download history older than 400 days.", 24 * time.Hour, (*App).storageSnapshot},
 	{"optimize-db", "Optimize database", "Runs SQLite VACUUM and ANALYZE to reclaim disk space and keep queries fast.", 7 * 24 * time.Hour, (*App).optimizeDB},
 	{"blob-verify", "Verify blob store", "Checks that the content file of every asset exists on disk and reports any that are missing.", 0, (*App).verifyBlobs},
+	{"deps-index", "Index package dependencies", "Reads every Maven pom, go.mod, conda package and hosted npm package to record what depends on what (the Dependents list on package pages). New uploads are indexed automatically.", 0, (*App).indexDepsAll},
 	{"rebuild-indexes", "Rebuild hosted indexes", "Regenerates apt Release/Packages, yum repodata and npm package metadata for all hosted repositories.", 0, (*App).reindexAll},
 }
 
 // scheduler runs periodic tasks whose interval has elapsed.
 func (a *App) scheduler() {
+	var done bool
+	if !a.getJSON("depsIndexed", &done) || !done { // first start with the dependency index: fill it once
+		go a.runTask("deps-index")
+	}
 	for range time.Tick(time.Minute) {
 		for _, t := range taskDefs {
 			a.tasksMu.Lock()
@@ -284,30 +289,7 @@ func (a *App) purge() (string, error) {
 var shaName = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (a *App) compactBlobs() (string, error) {
-	removed, freed := 0, int64(0)
-	err := filepath.WalkDir(a.blobs.dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		name := d.Name()
-		switch {
-		case strings.HasPrefix(name, "tmp-") && time.Since(info.ModTime()) > time.Hour:
-			os.Remove(p)
-			removed, freed = removed+1, freed+info.Size()
-		case shaName.MatchString(name):
-			a.mu.Lock()
-			a.gcLocked(name) // deletes only if no asset references it
-			a.mu.Unlock()
-			if _, err := os.Stat(p); os.IsNotExist(err) {
-				removed, freed = removed+1, freed+info.Size()
-			}
-		}
-		return nil
-	})
+	removed, freed, err := a.scanBlobs(true)
 	return fmt.Sprintf("Removed %d orphaned files, freed %s", removed, humanBytes(freed)), err
 }
 

@@ -1,1 +1,5 @@
 node_modules
+
+.e2e-data
+test-results
+playwright-report

@@ -55,8 +55,8 @@ for target in $TARGETS; do
   cp deploy/repoman.env.example "$stage/"
   cp -R docs "$stage/docs"
   case "$os" in
-    linux) cp deploy/linux/* "$stage/" ;;
-    darwin) cp deploy/macos/* "$stage/" ;;
+    linux) cp deploy/linux/* deploy/lib.sh "$stage/" ;;
+    darwin) cp deploy/macos/* deploy/lib.sh "$stage/" ;;
     windows) cp deploy/windows/* "$stage/" ;;
   esac
   if [ "$os" = windows ]; then

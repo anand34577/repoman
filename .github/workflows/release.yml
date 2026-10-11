@@ -185,6 +185,14 @@ jobs:
             echo
             echo "## Install"
             echo
+            echo "Linux and macOS, one line (verifies the checksum, installs the service; run it again to upgrade):"
+            echo
+            echo "\`\`\`bash"
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/get.sh | sudo sh"
+            echo "\`\`\`"
+            echo
+            echo "Or download an archive:"
+            echo
             echo "| Platform | Download |"
             echo "|---|---|"
             echo "| Linux x86-64 | \`repoman_${version}_linux_amd64.tar.gz\` |"
@@ -205,6 +213,12 @@ jobs:
             echo "First run, upgrade and service setup: see \`docs/installation.md\`."
           } > notes.md
 
+      - name: Pin the one-line installer to this release
+        run: |
+          # installs exactly this version unless --version says otherwise
+          sed 's|^CMD=install VERSION="${RM_VERSION:-}"|CMD=install VERSION="${RM_VERSION:-'"$GITHUB_REF_NAME"'}"|' scripts/get.sh > dist/get.sh
+          grep -q "$GITHUB_REF_NAME" dist/get.sh
+
       - uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
@@ -215,3 +229,4 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/SHA256SUMS
+            dist/get.sh

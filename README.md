@@ -69,6 +69,16 @@ Format support in detail:
 
 Pick one. In every case RepoMan then listens on **http://localhost:8081**.
 
+**Linux and macOS: one line** (downloads the right build, verifies its checksum, installs it as a service)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh
+```
+
+Run it again to upgrade (the database is backed up first); `... | sudo sh -s -- rollback` undoes an upgrade and
+`... | sudo sh -s -- migrate-from /path/to/data` adopts existing data. See
+[Installation](docs/installation.md#one-line-install-linux-and-macos).
+
 **Docker**
 
 ```bash

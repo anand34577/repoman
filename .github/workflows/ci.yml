@@ -48,6 +48,29 @@ jobs:
         # the race detector needs cgo, which the Linux and macOS runners provide out of the box
         run: go test ${{ runner.os != 'Windows' && '-race' || '' }} -count=1 ./...
 
+  e2e:
+    name: End-to-end (browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install dependencies
+        run: npm --prefix frontend ci
+
+      - name: Run the browser tests against a real server (uses the runner's Chrome)
+        run: npm --prefix frontend run e2e
+
   checks:
     name: Format, dependencies, vulnerabilities
     runs-on: ubuntu-latest
@@ -72,6 +95,9 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "Run gofmt on:"; echo "$unformatted"; exit 1
           fi
+
+      - name: Shell scripts (installers) pass shellcheck
+        run: shellcheck -s sh -S warning -e SC2034 scripts/get.sh deploy/lib.sh deploy/linux/install.sh deploy/macos/install.sh
 
       - name: go.mod is tidy
         working-directory: backend

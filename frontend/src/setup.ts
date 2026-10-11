@@ -218,3 +218,130 @@ export function clientGuides(base: string, r: Repo, user: string, token: string)
       ]
   }
 }
+
+export interface Usage { id: string; label: string; file?: string; code: string }
+
+/** Maven coordinates of one stored file: `artifact-1.0-sources.jar` is classifier "sources", type "jar". */
+export function mavenCoords(component: string, version: string, file?: string) {
+  const [group, artifact = ''] = component.split(':')
+  let classifier = '', type = 'jar'
+  const base = file?.split('/').pop() ?? ''
+  const prefix = `${artifact}-${version}`
+  if (version && base.startsWith(prefix)) {
+    const m = base.slice(prefix.length).match(/^(?:-([^.]+))?\.(.+)$/)
+    if (m) { classifier = m[1] ?? ''; type = m[2] }
+  }
+  return { group, artifact, classifier, type }
+}
+
+export interface UsageOpts { file?: string; user?: string; token?: string }
+
+/**
+ * "How do I use this package?" snippets for one component/version, like Maven Central's usage tabs. `file` (a stored
+ * path) selects the classifier/type for Maven; `user`/`token` fill credentials into the snippets that need them.
+ */
+export function usageSnippets(base: string, r: Repo, component: string, version: string, o: UsageOpts = {}): Usage[] {
+  const url = repoUrl(base, r)
+  const v = version
+  const user = o.user ?? '<USERNAME>'
+  const token = o.token || '<YOUR_API_TOKEN>'
+  const authUrl = url.replace(/^(https?:\/\/)/, `$1${encodeURIComponent(user)}:${token}@`)
+  const id = `repoman-${r.name}`
+  switch (r.format) {
+    case 'maven': {
+      const { group: g, artifact: a, classifier, type } = mavenCoords(component, v, o.file)
+      const ver = v || 'VERSION'
+      const extra = (classifier ? `
+  <classifier>${classifier}</classifier>` : '') + (type !== 'jar' ? `
+  <type>${type}</type>` : '')
+      const gav = `${g}:${a}:${ver}${classifier ? ':' + classifier : ''}${type !== 'jar' ? '@' + type : ''}`
+      return [
+        { id: 'maven', label: 'Maven', file: 'pom.xml', code: `<dependency>
+  <groupId>${g}</groupId>
+  <artifactId>${a}</artifactId>
+  <version>${ver}</version>${extra}
+</dependency>` },
+        { id: 'gradle-kts', label: 'Gradle (Kotlin)', file: 'build.gradle.kts', code: `implementation("${gav}")` },
+        { id: 'gradle', label: 'Gradle (Groovy)', file: 'build.gradle', code: `implementation '${gav}'` },
+        { id: 'sbt', label: 'sbt', file: 'build.sbt', code: `libraryDependencies += "${g}" % "${a}" % "${ver}"${classifier ? ` classifier "${classifier}"` : ''}` },
+        { id: 'ivy', label: 'Ivy', file: 'ivy.xml', code: `<dependency org="${g}" name="${a}" rev="${ver}"${classifier || type !== 'jar' ? `>
+  <artifact name="${a}" type="${type}" ext="${type}"${classifier ? ` m:classifier="${classifier}"` : ''}/>
+</dependency>` : '/>'}` },
+        { id: 'repo', label: 'Repository', file: 'pom.xml + ~/.m2/settings.xml', code: `<!-- pom.xml -->
+<repositories>
+  <repository>
+    <id>${id}</id>
+    <url>${url}</url>
+  </repository>
+</repositories>
+
+<!-- ~/.m2/settings.xml, inside <servers> -->
+<server>
+  <id>${id}</id>
+  <username>${user}</username>
+  <password>${token}</password>
+</server>` },
+      ]
+    }
+    case 'npm': {
+      const spec = `${component}${v ? '@' + v : ''}`
+      return [
+        { id: 'npm', label: 'npm', code: `npm install ${spec}` },
+        { id: 'yarn', label: 'Yarn', code: `yarn add ${spec}` },
+        { id: 'pnpm', label: 'pnpm', code: `pnpm add ${spec}` },
+        { id: 'json', label: 'package.json', code: `"dependencies": {
+  "${component}": "${v || 'latest'}"
+}` },
+        { id: 'repo', label: 'Via this repository', code: `npm install ${spec} --registry=${url}
+
+# .npmrc
+registry=${url}
+//${url.replace(/^https?:\/\//, '')}:_authToken=${token}` },
+      ]
+    }
+    case 'pypi': {
+      const spec = `${component}${v ? '==' + v : ''}`
+      return [
+        { id: 'pip', label: 'pip', code: `pip install ${spec}` },
+        { id: 'req', label: 'requirements.txt', file: 'requirements.txt', code: spec },
+        { id: 'poetry', label: 'Poetry', code: `poetry add ${spec}` },
+        { id: 'uv', label: 'uv', code: `uv add ${spec}` },
+        { id: 'repo', label: 'Via this repository', code: `pip install --index-url ${authUrl}simple/ ${spec}` },
+      ]
+    }
+    case 'docker': {
+      const ref = `${url}/${component}${v ? ':' + v : ''}`
+      const host = new URL(base).host
+      return [
+        { id: 'pull', label: 'docker pull', code: `docker pull ${ref}` },
+        { id: 'from', label: 'Dockerfile', file: 'Dockerfile', code: `FROM ${ref}` },
+        { id: 'k8s', label: 'Kubernetes', file: 'deployment.yaml', code: `containers:
+  - name: app
+    image: ${ref}` },
+        { id: 'login', label: 'Sign in first', code: `echo ${token} | docker login ${host} -u ${user} --password-stdin` },
+      ]
+    }
+    case 'go':
+      return [
+        { id: 'get', label: 'go get', code: `go get ${component}${v ? '@' + v : ''}` },
+        { id: 'mod', label: 'go.mod', file: 'go.mod', code: `require ${component} ${v || 'vX.Y.Z'}` },
+        { id: 'repo', label: 'Via this repository', code: `GOPROXY=${url},direct go get ${component}${v ? '@' + v : ''}` },
+      ]
+    case 'conda': {
+      const channel = authUrl.replace(/\/$/, '')
+      return [
+        { id: 'conda', label: 'conda', code: `conda install --override-channels -c ${channel} ${component}${v ? '=' + v : ''}` },
+        { id: 'env', label: 'environment.yml', file: 'environment.yml', code: `channels:
+  - ${channel}
+dependencies:
+  - ${component}${v ? '=' + v : ''}` },
+      ]
+    }
+    case 'apt':
+      return [{ id: 'apt', label: 'apt', code: `sudo apt install ${component}${v ? '=' + v : ''}` }]
+    case 'yum':
+      return [{ id: 'dnf', label: 'dnf / yum', code: `sudo dnf install ${component}${v ? '-' + v : ''}` }]
+    default:
+      return [] // raw files: the drawer already offers download and a copyable URL
+  }
+}
