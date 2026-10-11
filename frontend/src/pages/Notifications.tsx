@@ -6,7 +6,7 @@ import { IconBell, IconBellRinging, IconInfoCircle, IconPencil, IconPlus, IconSe
 import { useState } from 'react'
 import { api, useApi, type Notifier, type Repo } from '../api'
 import { EVENT_GROUPS, NOTIFY_PRESETS, presetOf } from '../events'
-import { confirmAction, EmptyState, HelpLabel, LoadError, notifyError, notifyOk, PageHeader, timeAgo } from '../util'
+import { confirmAction, EmptyState, HelpLabel, LoadError, notifyError, notifyOk, PageHeader, useValidation, When } from '../util'
 
 const delivered = (status: string) => status.startsWith('2')
 
@@ -71,7 +71,7 @@ export default function Notifications() {
                           <Tooltip label={n.lastStatus} multiline maw={360} disabled={delivered(n.lastStatus)}>
                             <Badge variant="light" color={delivered(n.lastStatus) ? 'teal' : 'red'} radius="sm">{delivered(n.lastStatus) ? 'Delivered' : 'Failed'}</Badge>
                           </Tooltip>
-                          <Text size="xs" c="dimmed">{timeAgo(n.lastDelivery)}</Text>
+                          <div><When unix={n.lastDelivery} /></div>
                         </> : <Text size="sm" c="dimmed">Never</Text>}
                       </Table.Td>
                       <Table.Td><Switch checked={n.enabled} onChange={() => toggle(n)} aria-label={`${n.enabled ? 'Pause' : 'Resume'} ${n.name}`} /></Table.Td>
@@ -125,6 +125,12 @@ function ChannelForm({ channel, onSaved }: { channel?: Notifier; onSaved: (newId
   const [preset, setPreset] = useState(() => (channel ? presetOf(channel.events) : 'problems'))
   const [busy, setBusy] = useState(false)
   const urlError = n.url && !/^https?:\/\/[^/\s]+/i.test(n.url) ? 'Start with http:// or https://' : n.url.replace(/\/+$/, '').endsWith('/message') ? 'Use the server address only, without /message' : undefined
+  const v = useValidation({
+    name: !n.name.trim() && 'Name this channel, e.g. after who receives it',
+    url: !n.url.trim() && 'Enter the address of your Gotify server',
+    token: !channel?.hasToken && !n.token.trim() && 'Paste the application token from Gotify (Apps → Create application)',
+    events: preset === 'custom' && n.events.length === 0 && 'Choose at least one event, or pick “Everything” above',
+  })
 
   const choose = (value: string) => {
     setPreset(value)
@@ -132,20 +138,21 @@ function ChannelForm({ channel, onSaved }: { channel?: Notifier; onSaved: (newId
     if (p) setN({ ...n, events: [...p.events] })
   }
   const save = () => {
+    if (!v.check() || urlError) return
     setBusy(true)
     const req = channel ? api<void>(`/notifiers/${channel.id}`, { method: 'PUT', body: n }).then(() => undefined) : api<{ id: number }>('/notifiers', { body: n }).then((r) => r.id)
     req.then((id) => { notifyOk('Channel saved'); onSaved(id) }).catch(notifyError).finally(() => setBusy(false))
   }
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); save() }}>
+    <form noValidate onSubmit={(e) => { e.preventDefault(); save() }}>
       <Stack>
-        <TextInput label="Name" required maxLength={100} placeholder="e.g. Ops phone" data-autofocus value={n.name} onChange={(e) => setN({ ...n, name: e.currentTarget.value })} />
-        <TextInput label="Gotify server URL" required placeholder="https://gotify.example.com" description="The address you open Gotify at. A sub-path such as https://example.com/gotify works too."
-          value={n.url} error={urlError} onChange={(e) => setN({ ...n, url: e.currentTarget.value })} />
+        <TextInput label="Name" withAsterisk maxLength={100} placeholder="e.g. Ops phone" data-autofocus value={n.name} onChange={(e) => setN({ ...n, name: e.currentTarget.value })} error={v.error('name')} />
+        <TextInput label="Gotify server URL" withAsterisk placeholder="https://gotify.example.com" description="The address you open Gotify at. A sub-path such as https://example.com/gotify works too."
+          inputMode="url" autoCapitalize="none" spellCheck={false} value={n.url} error={urlError || v.error('url')} onChange={(e) => setN({ ...n, url: e.currentTarget.value.trim() })} />
         <PasswordInput label={<HelpLabel label="Application token" help="In Gotify: Apps → Create application → copy the token. This is not your Gotify password and not a client token." />}
-          required={!channel?.hasToken} placeholder={channel?.hasToken ? 'Leave blank to keep the current token' : 'A…'} autoComplete="off"
-          value={n.token} onChange={(e) => setN({ ...n, token: e.currentTarget.value })} />
+          withAsterisk={!channel?.hasToken} placeholder={channel?.hasToken ? 'Leave blank to keep the current token' : 'A…'} autoComplete="off"
+          value={n.token} onChange={(e) => setN({ ...n, token: e.currentTarget.value })} error={v.error('token')} />
 
         <Radio.Group label="What to send" value={preset} onChange={choose}>
           <Stack gap="xs" mt="xs">
@@ -155,7 +162,7 @@ function ChannelForm({ channel, onSaved }: { channel?: Notifier; onSaved: (newId
         </Radio.Group>
         {preset === 'custom' && (
           <MultiSelect label="Events" data={EVENT_GROUPS} value={n.events} onChange={(events) => setN({ ...n, events })} searchable clearable
-            placeholder={n.events.length ? '' : 'Choose at least one event'} description="An empty selection sends every event." />
+            placeholder={n.events.length ? '' : 'Choose at least one event'} error={v.error('events')} comboboxProps={{ withinPortal: true }} />
         )}
         <MultiSelect label="Repositories" placeholder={n.repos.length ? '' : 'All repositories'} data={repos.data?.map((r) => r.name) ?? []} value={n.repos}
           onChange={(rs) => setN({ ...n, repos: rs })} searchable clearable
@@ -178,7 +185,7 @@ function ChannelForm({ channel, onSaved }: { channel?: Notifier; onSaved: (newId
         </Alert>
         <Switch label="Active" description="Paused channels keep their settings but send nothing." checked={n.enabled} onChange={(e) => setN({ ...n, enabled: e.currentTarget.checked })} />
         <Group justify="flex-end">
-          <Button type="submit" loading={busy} disabled={!!urlError}>{channel ? 'Save channel' : 'Save and send test'}</Button>
+          <Button type="submit" loading={busy}>{channel ? 'Save channel' : 'Save and send test'}</Button>
         </Group>
       </Stack>
     </form>

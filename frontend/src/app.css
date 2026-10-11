@@ -18,6 +18,10 @@ body {
 
 ::selection { background: var(--mantine-color-brand-2); color: var(--mantine-color-brand-9); }
 
+/* the page keeps its width when a list grows past the window, and scrollbars stay out of the way */
+html { scrollbar-gutter: stable; }
+* { scrollbar-width: thin; scrollbar-color: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-4)) transparent; }
+
 /* ---------- accessibility ---------- */
 .skip-link {
   position: fixed;
@@ -124,6 +128,9 @@ body {
   background: var(--rm-surface-subtle);
 }
 
+/* digits line up in columns of sizes, counts and dates */
+.mantine-Table-table, .stat-card { font-variant-numeric: tabular-nums; }
+
 /* badges in tables keep their full label instead of collapsing to an ellipsis */
 .mantine-Table-td .mantine-Badge-root { min-width: max-content; }
 
@@ -140,7 +147,11 @@ body {
 .stat-card {
   transition: box-shadow var(--rm-normal) var(--rm-ease), transform var(--rm-normal) var(--rm-ease);
 }
-.stat-card:hover { box-shadow: var(--mantine-shadow-md); }
+.stat-card:hover { box-shadow: var(--mantine-shadow-md); transform: translateY(-1px); }
+
+/* a whole card that is a link (repositories on phones) */
+.card-link { display: block; color: inherit; text-decoration: none; }
+.card-link:active { transform: scale(0.99); }
 
 .stat-icon {
   border-radius: var(--mantine-radius-md);
@@ -181,6 +192,18 @@ body {
   height: 100%;
   border-radius: 4px;
   transition: width 600ms var(--rm-ease);
+}
+
+.pager { border-top: 1px solid var(--rm-border); }
+
+/* tab bars scroll sideways on narrow screens instead of wrapping into a second row */
+.tabs-scroll { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tabs-scroll::-webkit-scrollbar { display: none; }
+.tabs-scroll .mantine-Tabs-tab { flex-shrink: 0; }
+
+/* phones: page actions and filters span the width instead of wrapping into ragged rows */
+@media (max-width: 36em) {
+  .page-actions, .page-actions > * { width: 100%; }
 }
 
 pre.snippet {

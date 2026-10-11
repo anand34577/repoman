@@ -1,12 +1,12 @@
-import { Anchor, Badge, Button, Card, Chip, Group, SegmentedControl, Select, Skeleton, Table, Text, TextInput, Tooltip } from '@mantine/core'
+import { Anchor, Badge, Box, Button, Card, Chip, Group, SegmentedControl, Select, Skeleton, Stack, Table, Text, TextInput, ThemeIcon, Tooltip } from '@mantine/core'
 import { IconDatabaseOff, IconLock, IconPlus, IconSearch } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBaseUrl, useIsAdmin } from '../App'
 import { useApi, type Repo } from '../api'
-import { FORMATS, FormatIcon } from '../formats'
+import { FORMATS, formatInfo, FormatIcon } from '../formats'
 import { repoUrl } from '../setup'
-import { Copy, EmptyState, formatBytes, FormatBadge, LoadError, PageHeader, Pager, StatusBadge, TypeBadge, usePaging } from '../util'
+import { Copy, EmptyState, formatBytes, FormatBadge, LoadError, PageHeader, Pager, plural, StatusBadge, TypeBadge, usePaging } from '../util'
 
 const sorts: { value: string; label: string; cmp: (a: Repo, b: Repo) => number }[] = [
   { value: 'name', label: 'Name', cmp: (a, b) => a.name.localeCompare(b.name) },
@@ -31,7 +31,7 @@ export default function Repositories() {
   const present = FORMATS.filter((f) => data?.some((r) => r.format === f.id))
   const rows = useMemo(() => (data ?? []).filter((r) =>
     (formats.length === 0 || formats.includes(r.format)) && (type === 'all' || r.type === type) &&
-    (r.name.includes(q.toLowerCase()) || r.description?.toLowerCase().includes(q.toLowerCase())))
+    (r.name.includes(q.trim().toLowerCase()) || r.description?.toLowerCase().includes(q.trim().toLowerCase())))
     .sort(sorts.find((s) => s.value === sort)!.cmp), [data, formats, type, q, sort])
   const shown = rows.slice(paging.offset, paging.offset + paging.size)
 
@@ -51,13 +51,43 @@ export default function Repositories() {
             ))}
           </Group>
         </Chip.Group>
-        <Group gap="sm">
-          <SegmentedControl size="sm" value={type} onChange={filterBy(setType)} data={['all', 'hosted', 'proxy', 'group']} aria-label="Repository type" />
-          <Select size="sm" w={170} aria-label="Sort repositories" allowDeselect={false} value={sort} onChange={(v) => setSort(v ?? 'name')} data={sorts} />
-          <TextInput placeholder="Filter by name" aria-label="Filter repositories by name" leftSection={<IconSearch size={16} />} value={q} onChange={(e) => filterBy(setQ)(e.currentTarget.value)} />
+        <Group gap="sm" w={{ base: '100%', md: 'auto' }}>
+          <SegmentedControl size="sm" value={type} onChange={filterBy(setType)} data={['all', 'hosted', 'proxy', 'group']} aria-label="Repository type" w={{ base: '100%', xs: 'auto' }} />
+          <Select size="sm" w={{ base: '100%', xs: 170 }} aria-label="Sort repositories" allowDeselect={false} value={sort} onChange={(v) => setSort(v ?? 'name')} data={sorts} />
+          <TextInput placeholder="Filter by name" aria-label="Filter repositories by name" leftSection={<IconSearch size={16} />} value={q} onChange={(e) => filterBy(setQ)(e.currentTarget.value)}
+            style={{ flex: '1 1 180px' }} />
         </Group>
       </Group>
+
+      {/* phones: one card per repository instead of a table that scrolls sideways */}
+      <Stack gap="sm" hiddenFrom="sm" mb="sm">
+        {!data && !error && Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={96} radius="lg" />)}
+        {shown.map((r) => {
+          const f = formatInfo(r.format)
+          return (
+            <Card key={r.name} component={Link} to={`/repositories/${r.name}`} padding="md" className="select-card card-link">
+              <Group justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
+                <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                  <ThemeIcon variant="light" color={f.color} size={40} radius="md"><f.icon size={22} /></ThemeIcon>
+                  <div style={{ minWidth: 0 }}>
+                    <Group gap={6} wrap="nowrap">
+                      <Text fw={600} truncate="end">{r.name}</Text>
+                      {r.private && <IconLock size={14} color="var(--mantine-color-dimmed)" aria-label="Private" style={{ flexShrink: 0 }} />}
+                    </Group>
+                    <Text size="xs" c="dimmed">{f.label} · {r.type}{r.access === 'read' && ' · read-only'}</Text>
+                  </div>
+                </Group>
+                <StatusBadge repo={r} />
+              </Group>
+              {r.description && <Text size="sm" c="dimmed" lineClamp={2} mt="xs">{r.description}</Text>}
+              <Text size="xs" c="dimmed" mt="xs">{plural(r.assetCount ?? 0, 'artifact')} · {formatBytes(r.size)} · {plural(r.downloads ?? 0, 'download')}</Text>
+            </Card>
+          )
+        })}
+      </Stack>
+
       <Card padding={0}>
+        <Box visibleFrom="sm">
         <Table.ScrollContainer minWidth={980}>
           <Table highlightOnHover verticalSpacing="sm" horizontalSpacing="lg">
             <Table.Thead>
@@ -87,7 +117,7 @@ export default function Repositories() {
                     <Table.Td><StatusBadge repo={r} /></Table.Td>
                     <Table.Td onClick={(e) => e.stopPropagation()}>
                       <Group gap={4} wrap="nowrap">
-                        <Text size="xs" ff="monospace" c="dimmed" truncate="end" maw={240} title={url}>{url}</Text>
+                        <Tooltip label={url} openDelay={500}><Text size="xs" ff="monospace" c="dimmed" truncate="end" maw={240}>{url}</Text></Tooltip>
                         <Copy value={url} label="Copy URL" />
                       </Group>
                     </Table.Td>
@@ -99,10 +129,12 @@ export default function Repositories() {
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
+        </Box>
         <Pager paging={paging} total={rows.length} noun="repositories" />
         {data && rows.length === 0 && (
           <EmptyState icon={<IconDatabaseOff />} title={data.length ? 'No repositories match your filters' : 'No repositories yet'}
-            action={!data.length && isAdmin && <Button component={Link} to="/repositories/new">Create your first repository</Button>}>
+            action={data.length ? <Button variant="light" onClick={() => { setFormats([]); setType('all'); setQ('') }}>Clear filters</Button>
+              : isAdmin && <Button component={Link} to="/repositories/new">Create your first repository</Button>}>
             {data.length ? 'Try clearing the format chips or search text.' : isAdmin ? 'Create one with the guided setup.' : 'Ask an administrator for access.'}
           </EmptyState>
         )}

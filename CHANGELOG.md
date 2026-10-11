@@ -5,6 +5,82 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+An audit of the server and the web UI: faster on large installations, several fixes, and a smoother interface.
+
+### Performance
+
+- The dashboard, the repository list, the *Components* tab and folder sizes in *Browse* are read from covering
+  indexes and short-lived caches instead of visiting every artifact. Measured on a test database of 600,000
+  artifacts: dashboard 1.8 s → 0.6 s on first load and instant afterwards, *Components* 1.3 s → 0.05 s,
+  browsing a folder with 86,000 artifacts below it 1 s → 0.17 s.
+- **Search uses a substring index.** Searching for part of a name took 0.6–1.3 s on that database and now takes
+  0.01–0.25 s; it finds the same artifacts as before (any part of a path or component, in any case). Every
+  sort order of the search page (updated, name, size, downloads) is served by an index too.
+- Downloads no longer wait for a database write each: download counters are kept in memory and written every
+  two seconds (and on shutdown), so many clients pulling at once are not queued behind one another.
+- A token's "last used" time is written at most once a minute instead of being checked with a write statement on
+  every request.
+- Uploading several `.deb` or `.rpm` files in the browser rebuilds the signed index once, not once per file.
+- The web UI shows a page you have opened before immediately and refreshes it in the background, and shares one
+  request between parts of the page that need the same data.
+- Search and the audit log skip the separate counting query when the last page is reached.
+
+### Fixed
+
+- A malformed npm package document (a version that is not an object) could crash the whole server when the hosted
+  indexes were rebuilt. Such publishes are now rejected, existing documents are read defensively, and a failing
+  maintenance task can no longer take the server down.
+- Docker: finishing a blob upload without a valid `digest` stored the layer under an empty name; it is now refused.
+- `/metrics` listed the name, size and download count of repositories the caller is not allowed to read.
+- *Run now* for a task that does not exist answered "started"; it now answers 404.
+- Importing a configuration with an invalid access level, an invalid base URL or `null` entries is reported per
+  entry instead of being stored or aborting the import.
+- A project name is escaped on PyPI index pages, and RPM headers with a negative entry count are rejected.
+- UI assets requested with a byte range were compressed after the range was cut; fonts and images are no longer
+  compressed a second time.
+- *Invalidate cache* on a proxy reset the "updated" date of every cached file to 1970, which broke
+  `Last-Modified`, sorting by date, and could let the cleanup policy delete files that were never downloaded
+  through the UI. It now only marks index data as stale.
+- Unexpected server errors no longer send the database's error text to the client; the response carries a
+  reference to look up in the server log.
+- Updating or deleting a webhook that does not exist answers 404 instead of success.
+
+### Changed
+
+- **Importing a configuration asks first.** Choosing a file shows what it contains; nothing is applied until you
+  confirm. Files that are not a RepoMan export are refused with an explanation.
+- Forms validate inline, in the same style everywhere, instead of with the browser's own pop-up messages.
+- Phones: repositories are listed as cards, tab bars scroll instead of wrapping, page actions use the full width,
+  and long repository names and URLs wrap instead of running off the screen.
+- If a page fails to render, or the server was upgraded while the UI was open, a message with a *Reload* button
+  replaces the blank page. When a session ends you are told why you are back at the sign-in form.
+- The dashboard puts *Needs attention* first, and cards no longer stretch to the height of their neighbours.
+- Exact dates are available on hover or keyboard focus for every relative time ("3 hours ago").
+- Webhooks can subscribe to `task.run`, `webhook.*` and `notifier.*` events from the picker.
+
+### Added
+
+- **Audit log period.** Filter by *Today*, the last 7, 30 or 90 days, or a custom range picked from a calendar;
+  the CSV export follows it. REST API: `from` and `to` (Unix seconds) on `GET /audit` and `GET /audit/export`.
+- **Unsaved changes are protected.** Leaving repository configuration or access, server settings, single
+  sign-on settings or the repository wizard with edits you have not saved asks first. (Closing or reloading
+  the browser tab is not intercepted.)
+
+### Security
+
+- react-router is updated from 6 to 7.18, which fixes an open redirect in links and navigation
+  (GHSA-wrjc-x8rr-h8h6). `npm audit` reports no known vulnerabilities.
+
+### Upgrade notes
+
+- New database indexes, including the search index, are built on the first start: about 40 seconds per
+  million artifacts, during which the server does not answer yet. The database grows by about half
+  (349 MB → 523 MB with 600,000 artifacts); the artifacts themselves are not touched.
+- The web UI has one new bundled dependency, Mantine's date picker (with dayjs). Nothing is loaded from the
+  network.
+- Download counts and "last downloaded" times reach the database (and so the UI, the API and `/metrics`) up to
+  two seconds after the download.
+
 ## [1.4.0]
 
 Makes the web UI usable with hundreds of thousands of artifacts.

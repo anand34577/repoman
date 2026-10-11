@@ -3,16 +3,20 @@ import { IconCircleCheck, IconInfoCircle, IconPlugConnected } from '@tabler/icon
 import { useEffect, useState } from 'react'
 import { useBaseUrl } from '../App'
 import { api, useApi, type OidcConfig } from '../api'
-import { Copy, HelpLabel, notifyError, notifyOk, Section } from '../util'
+import { Copy, HelpLabel, LoadError, notifyError, notifyOk, Section, useUnsavedGuard } from '../util'
+import { FormSkeleton } from './Settings'
 
 export default function Sso() {
-  const { data, reload } = useApi<OidcConfig>('/settings/oidc')
+  const { data, error, reload } = useApi<OidcConfig>('/settings/oidc')
   const base = useBaseUrl()
   const [c, setC] = useState<OidcConfig>()
   const [busy, setBusy] = useState(false)
   const [test, setTest] = useState<{ ok: boolean; message: string }>()
+  const [testing, setTesting] = useState(false)
   useEffect(() => setC(data), [data])
-  if (!c) return null
+  const dirty = !!c && JSON.stringify(c) !== JSON.stringify(data)
+  useUnsavedGuard(dirty)
+  if (!c) return error ? <LoadError error={error} retry={reload} /> : <FormSkeleton />
   const set = (p: Partial<OidcConfig>) => { setC({ ...c, ...p }); setTest(undefined) }
   const redirect = `${base}/api/auth/oidc/callback`
 
@@ -21,7 +25,10 @@ export default function Sso() {
     api<OidcConfig>('/settings/oidc', { method: 'PUT', body: c })
       .then(() => { notifyOk('Single sign-on settings saved'); reload() }).catch(notifyError).finally(() => setBusy(false))
   }
-  const check = () => api<{ ok: boolean; message: string }>('/settings/oidc/test', { body: { issuer: c.issuer } }).then(setTest).catch(notifyError)
+  const check = () => {
+    setTesting(true)
+    api<{ ok: boolean; message: string }>('/settings/oidc/test', { body: { issuer: c.issuer } }).then(setTest).catch(notifyError).finally(() => setTesting(false))
+  }
 
   return (
     <Stack maw={760}>
@@ -35,7 +42,7 @@ export default function Sso() {
             onChange={(e) => set({ clientSecret: e.currentTarget.value })} autoComplete="new-password" />
         </Group>
         <Group gap="xs">
-          <Button variant="light" size="xs" leftSection={<IconPlugConnected size={14} />} disabled={!c.issuer} onClick={check}>Test connection</Button>
+          <Button variant="light" size="xs" leftSection={<IconPlugConnected size={14} />} disabled={!c.issuer} loading={testing} onClick={check}>Test connection</Button>
           {test && <Text size="sm" c={test.ok ? 'teal' : 'red'}>{test.ok && <IconCircleCheck size={14} style={{ verticalAlign: -2 }} />} {test.message}</Text>}
         </Group>
         <div>
@@ -61,7 +68,11 @@ export default function Sso() {
         </Group>
         <TextInput label="Scopes" value={c.scopes} onChange={(e) => set({ scopes: e.currentTarget.value })} />
       </Section>
-      <Group justify="flex-end"><Button onClick={save} loading={busy}>Save single sign-on</Button></Group>
+      <Group justify="flex-end" gap="sm">
+        {dirty && <Text size="sm" c="dimmed">You have unsaved changes.</Text>}
+        {dirty && <Button variant="default" onClick={() => { setC(data); setTest(undefined) }}>Discard</Button>}
+        <Button onClick={save} loading={busy} disabled={!dirty}>Save single sign-on</Button>
+      </Group>
     </Stack>
   )
 }

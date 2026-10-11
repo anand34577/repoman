@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 import { api, useApi, type Format, type Repo, type RepoType } from '../api'
 import { FORMATS, formatInfo, TYPES } from '../formats'
-import { FormatBadge, notifyError, notifyOk, PageHeader, TypeBadge } from '../util'
+import { FormatBadge, notifyError, notifyOk, PageHeader, TypeBadge, useUnsavedGuard } from '../util'
 import { NAME_RE, RepoSettingsFields } from './RepoConfig'
 
 const blank: Repo = {
@@ -48,12 +48,15 @@ export default function RepoWizard() {
         : r.type === 'proxy' && !/^https?:\/\/.+/.test(r.remoteUrl ?? '') ? 'Enter the remote URL'
           : r.type === 'group' && !r.members?.length ? 'Add at least one member' : undefined
 
+  // from the configuration step on there is typed input to lose
+  const leaveFreely = useUnsavedGuard(step >= 2)
   const create = () => {
     setBusy(true)
     api<Repo>('/repositories', { body: r })
       .then((saved) => {
         notifyOk(`Repository ${saved.name} is ready. Follow the steps below to connect a client.`, 'Repository created')
         reloadRepos()
+        leaveFreely()
         navigate(`/repositories/${saved.name}/setup`)
       })
       .catch(notifyError)
@@ -86,7 +89,7 @@ export default function RepoWizard() {
         <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }}>
           {FORMATS.map((x) => (
             <Card key={x.id} padding="lg" className="select-card" data-selected={r.format === x.id || undefined} onClick={() => pickFormat(x.id)}
-              role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && pickFormat(x.id)}>
+              role="button" tabIndex={0} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), pickFormat(x.id))}>
               <ThemeIcon size={44} radius="md" variant="light" color={x.color}><x.icon size={26} /></ThemeIcon>
               <Text fw={600} mt="sm">{x.label}</Text>
               <Text size="sm" c="dimmed">{x.tagline}</Text>
@@ -104,7 +107,8 @@ export default function RepoWizard() {
               const help = t === 'hosted' ? f.hostedHelp : t === 'proxy' ? f.proxyHelp : f.groupHelp
               const card = (
                 <Card key={t} padding="lg" className="select-card" data-disabled={!ok || undefined} data-selected={(ok && r.type === t) || undefined}
-                  onClick={() => ok && pickType(t)} role="button" tabIndex={ok ? 0 : -1} onKeyDown={(e) => ok && e.key === 'Enter' && pickType(t)} h="100%">
+                  onClick={() => ok && pickType(t)} role="button" aria-disabled={!ok} tabIndex={ok ? 0 : -1}
+                  onKeyDown={(e) => ok && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), pickType(t))} h="100%">
                   <TypeBadge type={t} />
                   <Text fw={600} mt="sm">{TYPES[t].summary}</Text>
                   <Text size="sm" c="dimmed" mt={4}>{TYPES[t].detail}</Text>

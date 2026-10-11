@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useApi, type Asset, type Repo } from '../api'
 import { FORMATS } from '../formats'
-import { EmptyState, formatBytes, FormatBadge, LoadError, MAX_COUNT, PageHeader, Pager, timeAgo, usePaging } from '../util'
+import { EmptyState, formatBytes, FormatBadge, LoadError, MAX_COUNT, PageHeader, Pager, usePaging, When } from '../util'
 import { assetLink } from '../links'
 
 const sorts = [
@@ -75,8 +75,8 @@ export default function Search() {
                       <Anchor component={Link} to={`/repositories/${a.repo}`} size="sm">{a.repo}</Anchor>
                     </Group>
                   </Table.Td>
-                  <Table.Td ta="right"><Text size="sm">{formatBytes(a.size)}</Text></Table.Td>
-                  <Table.Td><Text size="sm" c="dimmed">{timeAgo(a.updatedAt)}</Text></Table.Td>
+                  <Table.Td ta="right"><Text size="sm" style={{ whiteSpace: 'nowrap' }}>{formatBytes(a.size)}</Text></Table.Td>
+                  <Table.Td><When unix={a.updatedAt} never="—" /></Table.Td>
                 </Table.Tr>
               ))}
             </Table.Tbody>

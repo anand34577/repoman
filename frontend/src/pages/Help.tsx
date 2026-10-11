@@ -56,7 +56,7 @@ export default function Help() {
     <>
       <PageHeader title="Guides & docs" description="Everything you need to set up and use RepoMan." />
       <Tabs value={sub || 'concepts'} onChange={(t) => navigate(`/help/${t === 'concepts' ? '' : t}`)} keepMounted={false}>
-        <Tabs.List mb="lg">
+        <Tabs.List mb="lg" className="tabs-scroll">
           <Tabs.Tab value="concepts" leftSection={<IconStack2 size={16} />}>Concepts</Tabs.Tab>
           <Tabs.Tab value="formats" leftSection={<IconBook size={16} />}>Formats</Tabs.Tab>
           <Tabs.Tab value="auth" leftSection={<IconKey size={16} />}>Authentication</Tabs.Tab>

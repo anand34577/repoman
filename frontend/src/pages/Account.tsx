@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth, useBaseUrl } from '../App'
 import { api, useApi, type OidcIdentity, type OidcPublic, type Token, type TokenScope } from '../api'
-import { Copy, fullDate, notifyError, notifyOk, PageHeader, timeAgo } from '../util'
+import { Copy, fullDate, notifyError, notifyOk, PageHeader, timeAgo, useValidation, When } from '../util'
 
 export default function Account() {
   const { user } = useAuth()
@@ -40,11 +40,17 @@ function Tokens() {
   const [name, setName] = useState('')
   const [days, setDays] = useState<number>(90)
   const [created, setCreated] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  const v = useValidation({ name: !name.trim() && 'Give the token a name, so you can tell later what uses it' })
 
-  const close = () => { setOpen(false); if (params.has('new')) setParams({}, { replace: true }) }
-  const create = () => api<{ token: string }>('/tokens', { body: { name, scope, expiresDays: days } })
-    .then((r) => { setCreated(r.token); setName(''); reload() })
-    .catch(notifyError)
+  const close = () => { setOpen(false); v.reset(); if (params.has('new')) setParams({}, { replace: true }) }
+  const create = () => {
+    if (!v.check()) return
+    setBusy(true)
+    api<{ token: string }>('/tokens', { body: { name: name.trim(), scope, expiresDays: days } })
+      .then((r) => { setCreated(r.token); setName(''); v.reset(); reload() })
+      .catch(notifyError).finally(() => setBusy(false))
+  }
 
   const revoke = (t: Token) => modals.openConfirmModal({
     title: `Revoke "${t.name}"?`,
@@ -56,13 +62,14 @@ function Tokens() {
 
   return (
     <Card padding="lg">
-      <Group justify="space-between" mb="xs">
+      <Group justify="space-between" mb="xs" wrap="nowrap" align="flex-start">
         <div>
           <Text fw={600}>API tokens</Text>
           <Text size="sm" c="dimmed">Use as the password for Maven, npm, pip, twine, Docker and curl, or as a bearer token for the REST API.</Text>
         </div>
-        <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => { setCreated(undefined); setOpen(true) }}>New token</Button>
+        <Button size="xs" style={{ flexShrink: 0 }} leftSection={<IconPlus size={14} />} onClick={() => { setCreated(undefined); setOpen(true) }}>New token</Button>
       </Group>
+      {!!data?.length && <Table.ScrollContainer minWidth={520}>
       <Table verticalSpacing="xs">
         <Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Access</Table.Th><Table.Th>Last used</Table.Th><Table.Th>Expires</Table.Th><Table.Th /></Table.Tr></Table.Thead>
         <Table.Tbody>
@@ -70,16 +77,19 @@ function Tokens() {
             <Table.Tr key={t.id}>
               <Table.Td><Text size="sm" fw={500}>{t.name}</Text><Text size="xs" c="dimmed">created {timeAgo(t.createdAt)}</Text></Table.Td>
               <Table.Td><Tooltip label={scopeInfo(t.scope).description} multiline maw={300}><Badge variant="light" color={scopeInfo(t.scope).color}>{scopeInfo(t.scope).label}</Badge></Tooltip></Table.Td>
-              <Table.Td><Text size="sm" c="dimmed">{timeAgo(t.lastUsed)}</Text></Table.Td>
-              <Table.Td><Text size="sm" c="dimmed">{t.expiresAt ? fullDate(t.expiresAt) : 'never'}</Text></Table.Td>
+              <Table.Td><When unix={t.lastUsed} /></Table.Td>
+              <Table.Td>{t.expiresAt && t.expiresAt * 1000 < Date.now()
+                ? <Badge variant="light" color="red">expired</Badge>
+                : <When unix={t.expiresAt} />}</Table.Td>
               <Table.Td><Tooltip label="Revoke"><ActionIcon variant="subtle" color="red" onClick={() => revoke(t)} aria-label={`Revoke ${t.name}`}><IconTrash size={16} /></ActionIcon></Tooltip></Table.Td>
             </Table.Tr>
           ))}
         </Table.Tbody>
       </Table>
+      </Table.ScrollContainer>}
       {data?.length === 0 && <Text size="sm" c="dimmed" ta="center" py="md">No tokens yet. Create one per machine or CI pipeline instead of using your password.</Text>}
 
-      <Modal opened={open} onClose={close} title={<Text fw={600}>New API token</Text>}>
+      <Modal opened={open} onClose={close} closeOnClickOutside={!created} title={<Text fw={600}>{created ? 'Your new API token' : 'New API token'}</Text>}>
         {created ? (
           <Stack>
             <Alert color="yellow" icon={<IconAlertTriangle />}>Copy this token now — it won't be shown again.</Alert>
@@ -92,9 +102,9 @@ function Tokens() {
             <Button onClick={close}>Done</Button>
           </Stack>
         ) : (
-          <form onSubmit={(e) => { e.preventDefault(); create() }}>
+          <form noValidate onSubmit={(e) => { e.preventDefault(); create() }}>
             <Stack>
-              <TextInput label="Name" placeholder="e.g. CI pipeline, laptop" required maxLength={100} data-autofocus value={name} onChange={(e) => setName(e.currentTarget.value)} />
+              <TextInput label="Name" placeholder="e.g. CI pipeline, laptop" withAsterisk maxLength={100} data-autofocus value={name} onChange={(e) => setName(e.currentTarget.value)} error={v.error('name')} />
               <Radio.Group label="Access" value={scope} onChange={(v) => setScope(v as TokenScope)}>
                 <Stack gap="xs" mt="xs">
                   {scopes.map((s) => <Radio key={s.value} value={s.value} label={s.label} description={s.description} />)}
@@ -107,7 +117,7 @@ function Tokens() {
                   data={[{ value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: '365', label: '1 year' }, { value: '0', label: 'Never' }]} />
                 <Text size="xs" c="dimmed" mt={4}>Short-lived tokens limit the damage if one leaks. Use one token per machine or pipeline.</Text>
               </div>
-              <Group justify="flex-end"><Button type="submit">Create token</Button></Group>
+              <Group justify="flex-end"><Button variant="default" onClick={close}>Cancel</Button><Button type="submit" loading={busy}>Create token</Button></Group>
             </Stack>
           </form>
         )}
@@ -168,11 +178,17 @@ function ChangePassword() {
   const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
   const mismatch = confirm !== '' && confirm !== next
+  const v = useValidation({
+    current: needsCurrent && !current && 'Enter your current password',
+    next: next.length < 8 ? 'Use at least 8 characters' : new TextEncoder().encode(next).length > 72 ? 'Use at most 72 bytes' : needsCurrent && next === current && 'Choose a password different from the current one',
+    confirm: confirm !== next && 'Passwords do not match',
+  })
 
   const save = () => {
+    if (!v.check()) return
     setBusy(true)
     api('/auth/password', { method: 'PUT', body: { current, new: next } })
-      .then(() => { notifyOk('Password changed'); setCurrent(''); setNext(''); setConfirm(''); id.reload() })
+      .then(() => { notifyOk('Other browsers signed in to this account were signed out.', 'Password changed'); setCurrent(''); setNext(''); setConfirm(''); v.reset(); id.reload() })
       .catch(notifyError)
       .finally(() => setBusy(false))
   }
@@ -180,12 +196,12 @@ function ChangePassword() {
     <Card padding="lg">
       <Text fw={600} mb="sm">{needsCurrent ? 'Change password' : 'Set a password'}</Text>
       {!needsCurrent && <Text size="sm" c="dimmed" mb="sm">Your account was created through single sign-on and has no password yet. Set one to use package clients with a password or to unlink SSO.</Text>}
-      <form onSubmit={(e) => { e.preventDefault(); save() }}>
+      <form noValidate onSubmit={(e) => { e.preventDefault(); save() }}>
         <Stack>
-          {needsCurrent && <PasswordInput label="Current password" required value={current} onChange={(e) => setCurrent(e.currentTarget.value)} autoComplete="current-password" />}
-          <PasswordInput label="New password" required minLength={8} value={next} onChange={(e) => setNext(e.currentTarget.value)} autoComplete="new-password" />
-          <PasswordInput label="Confirm new password" required value={confirm} error={mismatch && 'Passwords do not match'} onChange={(e) => setConfirm(e.currentTarget.value)} autoComplete="new-password" />
-          <Group justify="flex-end"><Button type="submit" loading={busy} disabled={mismatch}>Update password</Button></Group>
+          {needsCurrent && <PasswordInput label="Current password" withAsterisk value={current} onChange={(e) => setCurrent(e.currentTarget.value)} autoComplete="current-password" error={v.error('current')} />}
+          <PasswordInput label="New password" withAsterisk description="At least 8 characters" value={next} onChange={(e) => setNext(e.currentTarget.value)} autoComplete="new-password" error={v.error('next')} />
+          <PasswordInput label="Confirm new password" withAsterisk value={confirm} error={(mismatch && 'Passwords do not match') || v.error('confirm')} onChange={(e) => setConfirm(e.currentTarget.value)} autoComplete="new-password" />
+          <Group justify="flex-end"><Button type="submit" loading={busy}>Update password</Button></Group>
         </Stack>
       </form>
     </Card>

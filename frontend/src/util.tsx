@@ -5,8 +5,8 @@ import { useDocumentTitle } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import { IconAlertCircle, IconCheck, IconCopy, IconInfoCircle, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useState, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useBlocker, useRouteError, useSearchParams } from 'react-router-dom'
 import type { Format, Repo, RepoType } from './api'
 import { formatInfo, FormatIcon } from './formats'
 
@@ -29,6 +29,36 @@ export function timeAgo(unix: number) {
 }
 
 export const fullDate = (unix: number) => (unix ? new Date(unix * 1000).toLocaleString() : '—')
+
+/** "3 hours ago", with the exact date and time one hover (or focus) away. */
+export function When({ unix, never = 'never', prefix = '' }: { unix: number; never?: string; prefix?: string }) {
+  if (!unix) return <Text size="sm" c="dimmed" span>{never}</Text>
+  return (
+    <Tooltip label={fullDate(unix)}>
+      <Text size="sm" c="dimmed" span tabIndex={0} style={{ whiteSpace: 'nowrap' }}>{prefix}{timeAgo(unix)}</Text>
+    </Tooltip>
+  )
+}
+
+/** The platform's command key, for shortcut hints. */
+export const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
+
+export const plural = (n: number, one: string, many = one + 's') => `${n.toLocaleString()} ${n === 1 ? one : many}`
+
+/**
+ * Inline form validation. Pass each field's current problem (or a falsy value); messages show after the
+ * first submit attempt and clear as the field is fixed. Forms use this with `noValidate`, so people get
+ * the same styled message everywhere instead of the browser's own pop-up bubbles.
+ */
+export function useValidation<K extends string>(problems: Record<K, string | false | null | undefined>) {
+  const [tried, setTried] = useState(false)
+  return {
+    error: (field: K) => (tried && problems[field]) || undefined,
+    /** Call on submit: reveals the messages and reports whether the form may be sent. */
+    check: () => { setTried(true); return !Object.values(problems).some(Boolean) },
+    reset: () => setTried(false),
+  }
+}
 
 export const typeColor: Record<RepoType, string> = { hosted: 'teal', proxy: 'grape', group: 'indigo' }
 
@@ -105,7 +135,7 @@ export function PageHeader({ title, description, action, eyebrow }: { title: str
         <Title order={2}>{title}</Title>
         {description && <Text c="dimmed" size="sm" maw={720} mt={4}>{description}</Text>}
       </div>
-      {action}
+      {action && <div className="page-actions">{action}</div>}
     </Group>
   )
 }
@@ -168,6 +198,62 @@ export function LoadError({ error, retry }: { error?: string; retry?: () => void
   )
 }
 
+/** Keeps a rendering failure (or a page chunk that no longer exists after an upgrade) from blanking the whole app. */
+export class ErrorBoundary extends Component<{ children: ReactNode; resetKey?: string }, { error?: Error }> {
+  state: { error?: Error } = {}
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error) { console.error(error) }
+  componentDidUpdate(prev: { resetKey?: string }) {
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: undefined }) // navigating away recovers
+  }
+  render() {
+    return this.state.error ? <ErrorScreen error={this.state.error} /> : this.props.children
+  }
+}
+
+function ErrorScreen({ error }: { error: unknown }) {
+  const message = error instanceof Error ? error.message : String(error)
+  // a page chunk that is gone: the server was upgraded while this tab was open
+  const outdated = /dynamically imported module|module script|Failed to fetch|Unable to preload/i.test(message)
+  return (
+    <EmptyState icon={outdated ? <IconRefresh /> : <IconAlertCircle />} title={outdated ? 'RepoMan was updated' : 'This page ran into a problem'}
+      action={<Button leftSection={<IconRefresh size={16} />} onClick={() => window.location.reload()}>Reload</Button>}>
+      {outdated ? 'A newer version is running on the server. Reload to continue; nothing you saved is lost.'
+        : <>Reload to try again. If it keeps happening, tell your administrator what you were doing. <Text span size="xs" ff="monospace" display="block" mt="xs">{message}</Text></>}
+    </EmptyState>
+  )
+}
+
+/** The router's error element: the same screen for failures outside the page area (shell, sign-in). */
+export function RouteError() {
+  const error = useRouteError()
+  useEffect(() => console.error(error), [error])
+  return <ErrorScreen error={error} />
+}
+
+/**
+ * Asks before leaving a page that has unsaved edits. Only a change of page counts: paging and filters
+ * (the ?query of the same page) pass. Returns a function that lets the next navigation through, for a
+ * save that itself moves on.
+ */
+export function useUnsavedGuard(dirty: boolean) {
+  const allow = useRef(false)
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => dirty && !allow.current && currentLocation.pathname !== nextLocation.pathname)
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return
+    let leaving = false
+    modals.openConfirmModal({
+      title: <Text fw={600}>Leave without saving?</Text>,
+      children: <Text size="sm">This page has changes you haven't saved. If you leave now, they are lost.</Text>,
+      labels: { confirm: 'Discard changes', cancel: 'Keep editing' },
+      confirmProps: { color: 'red' },
+      onConfirm: () => { leaving = true; blocker.proceed() },
+      onClose: () => { if (!leaving) blocker.reset() }, // Cancel, Esc and a click outside all mean "stay"
+    })
+  }, [blocker.state]) // eslint-disable-line react-hooks/exhaustive-deps
+  return () => { allow.current = true }
+}
+
 export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <Stack align="center" gap="xs" py={48} px="md" ta="center">
@@ -196,10 +282,11 @@ function TypedConfirm({ name, body, label, onConfirm }: { name: string; body: Re
   return (
     <Stack>
       {body}
-      <TextInput label={<>Type <b>{name}</b> to confirm</>} value={typed} onChange={(e) => setTyped(e.currentTarget.value)} autoFocus data-autofocus />
+      <TextInput label={<>Type <b>{name}</b> to confirm</>} value={typed} onChange={(e) => setTyped(e.currentTarget.value)} autoFocus data-autofocus
+        autoComplete="off" spellCheck={false} />
       <Group justify="flex-end">
         <Button variant="default" onClick={() => modals.closeAll()}>Cancel</Button>
-        <Button color="red" disabled={typed !== name} loading={busy}
+        <Button color="red" disabled={typed.trim() !== name} loading={busy}
           onClick={() => { setBusy(true); onConfirm().then(() => modals.closeAll()).catch(notifyError).finally(() => setBusy(false)) }}>
           {label}
         </Button>

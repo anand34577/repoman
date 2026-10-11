@@ -10,9 +10,11 @@ import {
 } from '@tabler/icons-react'
 import { createContext, lazy, Suspense, useContext, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { api, useApi, type OidcPublic, type Repo, type Settings, type User } from './api'
+import { notifications } from '@mantine/notifications'
+import { api, clearApiCache, useApi, type OidcPublic, type Repo, type Settings, type User } from './api'
 import { FormatIcon, FORMATS } from './formats'
 import Dashboard from './pages/Dashboard'
+import { ErrorBoundary, MOD_KEY, useValidation } from './util'
 
 const Account = lazy(() => import('./pages/Account'))
 const AuditLog = lazy(() => import('./pages/Audit'))
@@ -35,27 +37,33 @@ export const baseUrl = (s?: Settings) => (s?.baseUrl || window.location.origin).
 export const useBaseUrl = () => baseUrl(useAuth().settings)
 
 export default function App() {
-  const [user, setUser] = useState<User | null>()
+  const [user, setUserState] = useState<User | null>()
+  // whatever one account loaded must not be shown to the next one
+  const setUser = (u: User | null) => { clearApiCache(); setUserState(u) }
 
   useEffect(() => {
     api<User>('/auth/me').then(setUser).catch(() => setUser(null))
-    const onUnauthorized = () => setUser(null)
+    const onUnauthorized = () => setUserState((cur) => {
+      if (cur) notifications.show({ id: 'signed-out', color: 'orange', title: 'You were signed out', message: 'Your session ended. Sign in again to continue where you left off.' })
+      clearApiCache()
+      return null
+    })
     window.addEventListener('rm:unauthorized', onUnauthorized)
     return () => window.removeEventListener('rm:unauthorized', onUnauthorized)
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (user === undefined) return <Center h="100vh"><Loader /></Center>
+  if (user === undefined) return <Center h="100vh"><Loader aria-label="Loading RepoMan" /></Center>
   if (user === null) return <Login onLogin={setUser} />
-  return <Shell user={user} logout={() => api('/auth/logout', { method: 'POST' }).finally(() => setUser(null))} />
+  return <Shell user={user} logout={() => api('/auth/logout', { method: 'POST' }).catch(() => undefined).finally(() => setUser(null))} />
 }
 
-function Brand() {
+function Brand({ compact }: { compact?: boolean }) {
   return (
     <Group gap="xs" wrap="nowrap">
       <div className="brand-mark"><IconBox size={20} /></div>
       <div>
         <Text fw={700} lh={1.1}>RepoMan</Text>
-        <Text size="xs" c="dimmed" lh={1.1}>Repository Manager</Text>
+        <Text size="xs" c="dimmed" lh={1.1} visibleFrom={compact ? 'xs' : undefined}>Repository Manager</Text>
       </div>
     </Group>
   )
@@ -132,10 +140,10 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
           <Group h="100%" justify="space-between" wrap="nowrap">
             <Group wrap="nowrap">
               <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-              <Link to="/" style={{ textDecoration: 'none', color: 'inherit' }}><Brand /></Link>
+              <Link to="/" aria-label="RepoMan dashboard" style={{ textDecoration: 'none', color: 'inherit' }}><Brand compact /></Link>
             </Group>
             <Group gap="sm" wrap="nowrap">
-              <form onSubmit={(e) => { e.preventDefault(); navigate(`/search?q=${encodeURIComponent(q)}`); searchRef.current?.blur() }}>
+              <form role="search" onSubmit={(e) => { e.preventDefault(); navigate(`/search?q=${encodeURIComponent(q.trim())}`); setQ(''); searchRef.current?.blur() }}>
                 <TextInput ref={searchRef} placeholder="Search artifacts" leftSection={<IconSearch size={16} />} value={q}
                   rightSection={<Kbd size="xs">/</Kbd>} onChange={(e) => setQ(e.currentTarget.value)} visibleFrom="md" w={260} radius="xl" aria-label="Search artifacts" />
               </form>
@@ -144,7 +152,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
               </ActionIcon>
               <Tooltip label="Command palette">
                 <Button variant="default" radius="xl" size="sm" onClick={spotlight.open} visibleFrom="sm" leftSection={<IconSearch size={14} />}
-                  rightSection={<Kbd size="xs">Ctrl K</Kbd>} c="dimmed" fw={400}>Go to…</Button>
+                  rightSection={<Kbd size="xs">{MOD_KEY} K</Kbd>} c="dimmed" fw={400}>Go to…</Button>
               </Tooltip>
               <Tooltip label={`Switch to ${scheme === 'dark' ? 'light' : 'dark'} theme`}>
                 <ActionIcon variant="default" size="lg" radius="xl" aria-label="Toggle theme"
@@ -195,7 +203,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
           </AppShell.Section>
           <AppShell.Section className="nav-footer">
             <Divider mb="sm" />
-            <Text size="xs" c="dimmed" px="sm">Press <Kbd size="xs">Ctrl</Kbd> + <Kbd size="xs">K</Kbd> to jump anywhere</Text>
+            <Text size="xs" c="dimmed" px="sm">Press <Kbd size="xs">{MOD_KEY}</Kbd> + <Kbd size="xs">K</Kbd> to jump anywhere</Text>
           </AppShell.Section>
         </AppShell.Navbar>
 
@@ -205,7 +213,8 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
             <Alert icon={<IconSpeakerphone />} color="brand" variant="light" mb="lg" withCloseButton closeButtonLabel="Dismiss announcement"
               onClose={() => setBannerHidden(settings.data?.banner)}>{settings.data.banner}</Alert>
           )}
-          <Suspense fallback={<Center py="xl"><Loader /></Center>}>
+          <ErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<Center py="xl"><Loader aria-label="Loading page" /></Center>}>
           <div className="page" key={pathname.split('/')[1]}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
@@ -227,6 +236,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
           </Routes>
           </div>
           </Suspense>
+          </ErrorBoundary>
           </div>
         </AppShell.Main>
       </AppShell>
@@ -247,10 +257,12 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
     if (window.location.search) window.history.replaceState(null, '', window.location.pathname) // keep the URL clean
   }, [])
 
+  const v = useValidation({ username: !username.trim() && 'Enter your username', password: !password && 'Enter your password' })
   const submit = (e: FormEvent) => {
     e.preventDefault()
+    if (!v.check()) return
     setBusy(true)
-    api<User>('/auth/login', { body: { username, password } })
+    api<User>('/auth/login', { body: { username: username.trim(), password } })
       .then(onLogin)
       .catch((err: Error) => setError(err.message))
       .finally(() => setBusy(false))
@@ -266,26 +278,28 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
               <Title order={3}>One home for every artifact</Title>
               <Text size="sm" c="dimmed" mt={4}>Host, proxy and group repositories for all your package formats.</Text>
             </div>
-            <SimpleGrid cols={4} spacing="xs">
+            <Group gap="xs">
               {FORMATS.map((f) => (
                 <Tooltip key={f.id} label={`${f.label}: ${f.tagline}`} withArrow>
-                  <ThemeIcon variant="light" color={f.color} size={44} radius="md"><f.icon size={24} /></ThemeIcon>
+                  <ThemeIcon variant="light" color={f.color} size={44} radius="md" tabIndex={0} aria-label={f.label}><f.icon size={24} /></ThemeIcon>
                 </Tooltip>
               ))}
-            </SimpleGrid>
-            <Group gap="xs" c="dimmed"><IconShieldLock size={16} /><Text size="xs">Signed indexes · scoped tokens · audit trail · runs fully offline</Text></Group>
+            </Group>
+            <Group gap="xs" c="dimmed" wrap="nowrap" align="flex-start"><IconShieldLock size={16} style={{ flexShrink: 0 }} /><Text size="xs">Signed indexes · scoped tokens · audit trail · runs fully offline</Text></Group>
           </Stack>
           {choosing ? <SsoChooser onLogin={onLogin} onCancel={() => setChoosing(false)} /> : (
-          <form onSubmit={submit}>
-            <Stack p={40} justify="center" h="100%">
+          <form onSubmit={submit} noValidate>
+            <Stack p={{ base: 'lg', xs: 40 }} justify="center" h="100%">
               <Group hiddenFrom="sm" mb="sm"><Brand /></Group>
               <div>
                 <Title order={2}>Welcome back</Title>
                 <Text c="dimmed" size="sm">Use your RepoMan account</Text>
               </div>
               {error && <Alert color="red" variant="light" py="xs" role="alert">{error}</Alert>}
-              <TextInput label="Username" size="md" value={username} onChange={(e) => { setUsername(e.currentTarget.value); setError(undefined) }} autoFocus required autoComplete="username" />
-              <PasswordInput label="Password" size="md" value={password} onChange={(e) => { setPassword(e.currentTarget.value); setError(undefined) }} required autoComplete="current-password" error={!!error} />
+              <TextInput label="Username" size="md" value={username} onChange={(e) => { setUsername(e.currentTarget.value); setError(undefined) }} autoFocus
+                autoComplete="username" autoCapitalize="none" spellCheck={false} error={v.error('username')} />
+              <PasswordInput label="Password" size="md" value={password} onChange={(e) => { setPassword(e.currentTarget.value); setError(undefined) }}
+                autoComplete="current-password" error={v.error('password') || !!error} />
               <Button type="submit" size="md" loading={busy} fullWidth mt="xs">Sign in</Button>
               {sso?.enabled && (
                 <>
@@ -312,6 +326,7 @@ function SsoChooser({ onLogin, onCancel }: { onLogin: (u: User) => void; onCance
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const v = useValidation({ username: !username.trim() && 'Enter your RepoMan username', password: !password && 'Enter your RepoMan password' })
   const complete = (body: Record<string, string>) => {
     setBusy(true)
     api<User>('/auth/oidc/complete', { body }).then(onLogin).catch((e: Error) => setError(e.message)).finally(() => setBusy(false))
@@ -322,10 +337,10 @@ function SsoChooser({ onLogin, onCancel }: { onLogin: (u: User) => void; onCance
       <Button onClick={onCancel}>Back to sign in</Button>
     </Stack>
   )
-  if (!data) return <Center><Loader /></Center>
+  if (!data) return <Center h="100%" mih={240}><Loader aria-label="Loading" /></Center>
   return (
-    <form onSubmit={(e) => { e.preventDefault(); complete({ action: 'link', username, password }) }}>
-      <Stack p={40} justify="center" h="100%">
+    <form noValidate onSubmit={(e) => { e.preventDefault(); if (v.check()) complete({ action: 'link', username: username.trim(), password }) }}>
+      <Stack p={{ base: 'lg', xs: 40 }} justify="center" h="100%">
         <div>
           <Title order={2}>Almost there</Title>
           <Text c="dimmed" size="sm">Signed in with SSO{data.email ? <> as <b>{data.email}</b></> : null}. Do you already have a RepoMan account?</Text>
@@ -333,8 +348,9 @@ function SsoChooser({ onLogin, onCancel }: { onLogin: (u: User) => void; onCance
         {error && <Alert color="red" variant="light" py="xs" role="alert">{error}</Alert>}
         {data.canLink && (
           <>
-            <TextInput label="Existing username" value={username} onChange={(e) => { setUsername(e.currentTarget.value); setError(undefined) }} required autoComplete="username" autoFocus />
-            <PasswordInput label="Existing password" value={password} onChange={(e) => { setPassword(e.currentTarget.value); setError(undefined) }} required autoComplete="current-password" />
+            <TextInput label="Existing username" value={username} onChange={(e) => { setUsername(e.currentTarget.value); setError(undefined) }} autoComplete="username" autoFocus
+              autoCapitalize="none" spellCheck={false} error={v.error('username')} />
+            <PasswordInput label="Existing password" value={password} onChange={(e) => { setPassword(e.currentTarget.value); setError(undefined) }} autoComplete="current-password" error={v.error('password')} />
             <Button type="submit" loading={busy} fullWidth>Link and sign in</Button>
             <Text size="xs" c="dimmed">Your existing account keeps its role, permissions and tokens. Next time, SSO signs you straight in.</Text>
           </>
