@@ -5,7 +5,7 @@
 - [Settings every repository has](#settings-every-repository-has)
 - [How proxies behave](#how-proxies-behave)
 - [Cleanup and quotas](#cleanup-and-quotas)
-- Formats: [Maven](#maven) · [npm](#npm) · [PyPI](#pypi) · [Docker / OCI](#docker--oci) · [Go](#go-modules) · [APT](#apt) · [YUM / DNF](#yum--dnf) · [Conda](#conda) · [Raw](#raw)
+- Formats: [Maven](#maven) · [npm](#npm) · [PyPI](#pypi) · [Docker / OCI](#docker--oci) · [Go](#go-modules) · [APT](#apt) · [YUM / DNF](#yum--dnf) · [Conda](#conda) · [Rust / Cargo](#rust--cargo) · [Dart / Flutter](#dart--flutter-pub) · [Hugging Face](#hugging-face) · [Git LFS](#git-lfs) · [Alpine](#alpine) · [Raw](#raw)
 
 Every repository's **Setup** tab in the UI generates the snippets below with your server's address, your user
 name and — if you click **Generate token** — a fresh token already filled in. This page explains what those
@@ -481,6 +481,62 @@ Good to know:
   admin who opens the repository settings can see it.
 - If an upstream index sets an absolute `base_url` (CEP-15 repodata v2), clients download packages from that
   URL directly, not through RepoMan. conda-forge and Anaconda's channels did not use it when this was written.
+
+## Rust / Cargo
+
+Clients: cargo (sparse registry protocol). Hosted, proxy and group.
+
+`~/.cargo/config.toml`:
+
+```toml
+[registries.repoman]
+index = "sparse+https://repo.example.com/repository/crates/"
+
+[registry]
+global-credential-providers = ["cargo:token"]
+```
+
+Sign in with `cargo login --registry repoman rm_your_token`, publish with `cargo publish --registry repoman`.
+To route crates.io through a proxy, add `[source.crates-io] replace-with = "repoman"`. A proxy's remote URL is the
+index, `https://index.crates.io`. The index is generated from what is stored, so it never drifts; yanking works.
+
+## Dart / Flutter (pub)
+
+Clients: `dart pub`, `flutter pub`. Hosted, proxy (remote `https://pub.dev`) and group.
+
+```sh
+dart pub token add https://repo.example.com/repository/dart      # paste rm_your_token
+export PUB_HOSTED_URL=https://repo.example.com/repository/dart   # every package, or use `hosted:` per dependency
+dart pub publish                                                 # with publish_to: set in pubspec.yaml
+```
+
+## Hugging Face
+
+Clients: `huggingface_hub`, `transformers`, `huggingface-cli`. Set `HF_ENDPOINT` to the repository URL.
+
+- **Proxy** (remote `https://huggingface.co`): caches public models, datasets and spaces. Private Hugging Face
+  repositories and tokens are not supported. Files are downloaded in full before they are served.
+- **Hosted**: serves files you upload with `curl -u alice:rm_your_token --upload-file ./model.safetensors
+  https://repo.example.com/repository/hf/acme/my-model/resolve/main/model.safetensors` (or the Browse tab). There is
+  no git history: every revision, including the commit id reported by the API, refers to the current files.
+  `huggingface-cli upload` is not supported.
+
+## Git LFS
+
+Hosted only. Set `git config lfs.url https://repo.example.com/repository/lfs` (or commit it in `.lfsconfig`); git asks
+for your user name and token on the first push. Objects are stored by their SHA-256, so identical files are stored once.
+File locking is not supported.
+
+## Alpine
+
+Clients: `apk`. Hosted and proxy (remote e.g. `https://dl-cdn.alpinelinux.org/alpine`). Groups are not supported.
+
+`/etc/apk/repositories`: `https://alice:rm_your_token@repo.example.com/repository/alpine-proxy/v3.20/main`
+
+**Hosted**: upload `.apk` files into a folder, `curl -u alice:rm_your_token --upload-file ./pkg-1.0-r0.apk
+https://repo.example.com/repository/alpine-hosted/v3.20/main/x86_64/pkg-1.0-r0.apk`. The file is stored as
+`<pkgname>-<pkgver>.apk` and the folder's `APKINDEX.tar.gz` is generated on request. It is not signed, so clients need
+`apk add --allow-untrusted`.
 
 ## Raw
 

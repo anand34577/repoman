@@ -206,6 +206,64 @@ export function clientGuides(base: string, r: Repo, user: string, token: string)
         }] : []),
       ]
     }
+    case 'cargo': {
+      const reg = `sparse+${url}`
+      return [
+        {
+          id: 'cargo', label: 'cargo', steps: [
+            { title: 'Register this repository', file: '~/.cargo/config.toml', description: r.type === 'proxy' ? 'Replaces crates.io, so every build goes through the cache.' : 'Name it in Cargo.toml with registry = "repoman".', code: r.type === 'proxy'
+              ? `[source.crates-io]\nreplace-with = "repoman"\n\n[registries.repoman]\nindex = "${reg}"\n\n[registry]\nglobal-credential-providers = ["cargo:token"]`
+              : `[registries.repoman]\nindex = "${reg}"\n\n[registry]\nglobal-credential-providers = ["cargo:token"]` },
+            { title: 'Sign in (when anonymous access is off)', code: `cargo login --registry repoman ${token}` },
+            ...(deploy ? [{ title: 'Publish', code: 'cargo publish --registry repoman' }] : []),
+          ],
+        },
+      ]
+    }
+    case 'pub': {
+      const hosted = url.replace(/\/$/, '')
+      return [
+        {
+          id: 'pub', label: 'dart / flutter', steps: [
+            { title: 'Sign in (when anonymous access is off)', description: `Paste the token when asked: ${token}`, code: `dart pub token add ${hosted}` },
+            { title: 'Use this repository for one package', file: 'pubspec.yaml', code: `dependencies:\n  my_package:\n    hosted: ${hosted}\n    version: ^1.0.0` },
+            { title: 'Or for every package', description: 'Flutter uses the same variable.', code: `export PUB_HOSTED_URL=${hosted}` },
+            ...(deploy ? [{ title: 'Publish', description: 'Set publish_to in pubspec.yaml to this URL first.', code: `publish_to: ${hosted}\n\ndart pub publish` }] : []),
+          ],
+        },
+      ]
+    }
+    case 'huggingface':
+      return [
+        {
+          id: 'hf', label: 'huggingface_hub', steps: [
+            { title: 'Point the client at this repository', code: `export HF_ENDPOINT=${url.replace(/\/$/, '')}` },
+            { title: 'Download', code: 'huggingface-cli download org/model' },
+            ...(deploy ? [{ title: 'Upload a file', code: `curl -u ${user}:${token} --upload-file ./config.json ${url}org/model/resolve/main/config.json` }] : []),
+          ],
+        },
+      ]
+    case 'lfs':
+      return [
+        {
+          id: 'lfs', label: 'git lfs', steps: [
+            { title: 'Use this server for LFS', description: 'Run inside your git repository, or commit the setting in .lfsconfig. Git asks for credentials on the first push.', code: `git config lfs.url ${url.replace(/\/$/, '')}\ngit lfs track "*.psd"\ngit add .gitattributes` },
+            { title: 'Credentials in the URL (optional)', code: `git config lfs.url ${authUrl.replace(/\/$/, '')}` },
+          ],
+        },
+      ]
+    case 'alpine': {
+      const repoLine = authUrl.replace(/\/$/, '')
+      return [
+        {
+          id: 'apk', label: 'apk', steps: [
+            { title: 'Add the repository', file: '/etc/apk/repositories', description: r.type === 'proxy' ? 'Use your Alpine branch and repository, e.g. v3.20/main. Drop user:token if anonymous access is on.' : 'Point at the folder you uploaded to. Drop user:token if anonymous access is on.', code: `${repoLine}/v3.20/main` },
+            { title: 'Update and install', description: r.type === 'proxy' ? undefined : 'Hosted indexes are not signed, so allow untrusted packages.', code: r.type === 'proxy' ? 'apk update && apk add <package>' : 'apk update --allow-untrusted && apk add --allow-untrusted <package>' },
+          ],
+        },
+        ...(deploy ? [{ id: 'publish', label: 'Upload packages', steps: [{ title: 'Upload an .apk', description: 'Into the folder clients list in /etc/apk/repositories. Or drag and drop files on the Browse tab.', code: `curl -u ${user}:${token} --upload-file ./pkg-1.0-r0.apk ${url}v3.20/main/x86_64/pkg-1.0-r0.apk` }] }] : []),
+      ]
+    }
     default:
       return [
         {
@@ -337,6 +395,23 @@ dependencies:
   - ${component}${v ? '=' + v : ''}` },
       ]
     }
+    case 'cargo':
+      return [
+        { id: 'add', label: 'cargo add', code: `cargo add ${component}${v ? '@' + v : ''} --registry repoman` },
+        { id: 'toml', label: 'Cargo.toml', file: 'Cargo.toml', code: `[dependencies]\n${component} = { version = "${v || '*'}", registry = "repoman" }` },
+      ]
+    case 'pub':
+      return [
+        { id: 'add', label: 'dart pub add', code: `dart pub add ${component}${v ? ':' + v : ''} --hosted-url ${url.replace(/\/$/, '')}` },
+        { id: 'yaml', label: 'pubspec.yaml', file: 'pubspec.yaml', code: `dependencies:\n  ${component}:\n    hosted: ${url.replace(/\/$/, '')}\n    version: ${v || 'any'}` },
+      ]
+    case 'huggingface':
+      return [
+        { id: 'cli', label: 'huggingface-cli', code: `HF_ENDPOINT=${url.replace(/\/$/, '')} huggingface-cli download ${component}` },
+        { id: 'py', label: 'Python', code: `import os\nos.environ["HF_ENDPOINT"] = "${url.replace(/\/$/, '')}"\nfrom huggingface_hub import snapshot_download\nsnapshot_download("${component}")` },
+      ]
+    case 'alpine':
+      return [{ id: 'apk', label: 'apk', code: `apk add ${component}${v ? '=' + v : ''}` }]
     case 'apt':
       return [{ id: 'apt', label: 'apt', code: `sudo apt install ${component}${v ? '=' + v : ''}` }]
     case 'yum':

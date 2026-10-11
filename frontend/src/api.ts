@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type Role = 'viewer' | 'developer' | 'admin'
-export type Format = 'maven' | 'npm' | 'pypi' | 'docker' | 'go' | 'apt' | 'yum' | 'conda' | 'raw'
+export type Format = 'maven' | 'npm' | 'pypi' | 'docker' | 'go' | 'apt' | 'yum' | 'conda' | 'cargo' | 'pub' | 'huggingface' | 'lfs' | 'alpine' | 'raw'
 export type RepoType = 'hosted' | 'proxy' | 'group'
 export type Access = 'none' | 'read' | 'write'
 export type TokenScope = 'read' | 'write' | 'full'
@@ -147,6 +147,11 @@ export interface Stats {
   storageBytes: number
   logicalBytes: number
   users: number
+  types: Partial<Record<RepoType, number>>
+  statuses: Partial<Record<'online' | 'degraded' | 'offline', number>>
+  hostedBytes: number
+  cachedBytes: number
+  downloadsDaily: { day: string; n: number }[]
   formats: { format: Format; repos: number; assets: number; bytes: number }[]
   attention: Repo[] | null
   recent: Asset[]

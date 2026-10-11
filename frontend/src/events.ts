@@ -1,7 +1,7 @@
 /** Audit events, grouped for the webhook and notification pickers. Patterns ending in * match a prefix. */
 export const EVENT_GROUPS = [
   { group: 'Health', items: ['repository.degraded', 'repository.recovered', 'repository.quota', 'task.failed', 'system.start'] },
-  { group: 'Artifacts', items: ['asset.upload', 'asset.delete', 'component.delete', 'npm.publish', 'pypi.upload', 'docker.push', 'docker.delete', 'go.upload', 'apt.upload', 'yum.upload', 'conda.upload'] },
+  { group: 'Artifacts', items: ['asset.upload', 'asset.delete', 'component.delete', 'npm.publish', 'pypi.upload', 'docker.push', 'docker.delete', 'go.upload', 'apt.upload', 'yum.upload', 'conda.upload', 'cargo.publish', 'pub.publish', 'alpine.upload', 'lfs.upload'] },
   { group: 'Repositories', items: ['repository.create', 'repository.update', 'repository.delete', 'repository.permissions', 'repository.reindex', 'cleanup', 'cache.invalidate'] },
   {
     group: 'Security', items: ['login', 'login.failed', 'login.lockout', 'oidc.login', 'oidc.login.failed', 'oidc.link', 'oidc.unlink', 'password.change', 'password.reset',
@@ -15,7 +15,7 @@ export const WEBHOOK_EVENT_GROUPS = EVENT_GROUPS.map((g) => g.group === 'Adminis
   ? { ...g, items: [...g.items, 'notifier.create', 'notifier.update', 'notifier.delete'] } : g)
 
 const problems = ['repository.degraded', 'repository.recovered', 'repository.quota', 'task.failed', 'login.lockout']
-const publishing = ['npm.publish', 'pypi.upload', 'docker.push', 'go.upload', 'apt.upload', 'yum.upload', 'conda.upload']
+const publishing = ['npm.publish', 'pypi.upload', 'docker.push', 'go.upload', 'apt.upload', 'yum.upload', 'conda.upload', 'cargo.publish', 'pub.publish', 'alpine.upload', 'lfs.upload']
 const security = ['login.failed', 'oidc.login.failed', 'password.change', 'password.reset', 'user.create', 'user.update', 'user.delete', 'token.create', 'settings.update', 'repository.delete', 'repository.permissions', 'config.import']
 
 /** Ready-made subscriptions for notification channels; `custom` leaves the picker to the user. */

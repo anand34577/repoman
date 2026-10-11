@@ -5,6 +5,31 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0]
+
+Five more formats, and a dashboard that is easier to read and no longer counts groups twice.
+
+### Upgrade notes
+
+- The first start adds an index on the daily download counters, for the dashboard's 30-day chart. On a large database
+  this takes a moment.
+- The new formats need no configuration; create repositories for them in the wizard.
+
+### Added
+
+- Formats: Rust / Cargo (sparse registry), Dart / Flutter (pub), Hugging Face, Git LFS and Alpine (apk).
+
+### Changed
+
+- The dashboard is grouped into overview, health and activity, storage and artifacts. New: the repository mix by type,
+  status counts, downloads over the last 30 days, and how much storage is your own artifacts versus proxy caches.
+  Formats that are set up but still empty no longer fill the storage list with empty bars.
+
+### Fixed
+
+- The dashboard counted a group's artifacts and bytes on top of its members', so a group of a 100 MB proxy and a
+  50 MB hosted repository added 150 MB again. Groups are now left out of the totals and the per-format sizes.
+
 ## [1.6.0]
 
 Groups show what their members hold, packages get a page of their own, and Linux and macOS get a one-line installer

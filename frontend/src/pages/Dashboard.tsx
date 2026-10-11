@@ -1,9 +1,10 @@
+import type { ReactNode } from 'react'
 import {
-  Anchor, Button, Card, CloseButton, Group, Progress, SimpleGrid, Skeleton, Stack, Text, ThemeIcon,
+  Anchor, Badge, Button, Card, CloseButton, Group, Progress, SimpleGrid, Skeleton, Stack, Text, ThemeIcon,
 } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
 import {
-  IconAlertTriangle, IconArchive, IconCircleCheckFilled, IconCircleDashed, IconCloudDownload, IconDatabase, IconPlus, IconServer,
+  IconAlertTriangle, IconArchive, IconArrowRight, IconCircleCheckFilled, IconCircleDashed, IconCloudDownload, IconDatabase, IconPlus, IconServer,
 } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useAuth, useIsAdmin } from '../App'
@@ -11,6 +12,7 @@ import { useApi, type Asset, type Stats } from '../api'
 import { formatInfo, FormatIcon } from '../formats'
 import { EmptyState, formatBytes, LoadError, PageHeader, plural, StatusBadge, timeAgo } from '../util'
 import { assetLink } from '../links'
+import { DayChart } from '../usage'
 
 function StatCard({ label, value, hint, icon: Icon, color }: { label: string; value: string | number; hint?: string; icon: typeof IconServer; color: string }) {
   return (
@@ -96,13 +98,67 @@ function GettingStarted({ setup }: { setup: Stats['setup'] }) {
   )
 }
 
+function CardTitle({ title, link }: { title: string; link?: { to: string; label: string } }) {
+  return (
+    <Group justify="space-between" mb="md" wrap="nowrap">
+      <Text fw={600}>{title}</Text>
+      {link && <Anchor component={Link} to={link.to} size="sm" style={{ whiteSpace: 'nowrap' }}>{link.label} <IconArrowRight size={14} style={{ verticalAlign: -2 }} /></Anchor>}
+    </Group>
+  )
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section style={{ marginBottom: 'var(--mantine-spacing-xl)' }}>
+      <Text size="xs" c="dimmed" tt="uppercase" fw={600} className="page-eyebrow" mb="sm">{title}</Text>
+      {children}
+    </section>
+  )
+}
+
+const statuses = [['online', 'teal', 'online'], ['degraded', 'orange', 'remote unavailable'], ['offline', 'gray', 'offline']] as const
+
+/** Hosted (published here) against cached (copied by proxies), as one split bar with a legend. */
+function StorageSplit({ s }: { s: Stats }) {
+  const total = Math.max(1, s.hostedBytes + s.cachedBytes)
+  const parts = [
+    { label: 'Hosted', hint: 'published here', bytes: s.hostedBytes, color: 'var(--mantine-color-brand-6)' },
+    { label: 'Cached', hint: 'copied by proxies', bytes: s.cachedBytes, color: 'var(--mantine-color-cyan-5)' },
+  ]
+  return (
+    <div>
+      <div className="bar-track" style={{ display: 'flex', height: 10, gap: 2, background: 'transparent' }} role="img"
+        aria-label={parts.map((p) => `${p.label} ${formatBytes(p.bytes)}`).join(', ')}>
+        {parts.filter((p) => p.bytes > 0).map((p) => (
+          <div key={p.label} className="bar-fill" style={{ width: `${Math.max(2, (p.bytes / total) * 100)}%`, background: p.color }} />
+        ))}
+        {s.hostedBytes + s.cachedBytes === 0 && <div className="bar-fill" style={{ width: '100%', background: 'var(--mantine-color-default-border)' }} />}
+      </div>
+      <Group gap="lg" mt="xs">
+        {parts.map((p) => (
+          <Group key={p.label} gap={6} wrap="nowrap">
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: p.color, flexShrink: 0 }} />
+            <Text size="sm"><b>{p.label}</b> {formatBytes(p.bytes)} <Text span size="xs" c="dimmed">{p.hint}</Text></Text>
+          </Group>
+        ))}
+      </Group>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const { user } = useAuth()
   const isAdmin = useIsAdmin()
   const { data: s, error, reload } = useApi<Stats>('/stats')
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
-  const maxBytes = Math.max(1, ...(s?.formats.map((f) => f.bytes) ?? [1]))
+  const used = (s?.formats ?? []).filter((f) => f.repos > 0).sort((a, b) => b.bytes - a.bytes || b.assets - a.assets)
+  const filled = used.filter((f) => f.assets > 0)
+  const empty = used.filter((f) => f.assets === 0)
+  const maxBytes = Math.max(1, ...filled.map((f) => f.bytes))
+  const formatTotal = Math.max(1, filled.reduce((n, f) => n + f.bytes, 0))
+  const recentDownloads = s?.downloadsDaily?.reduce((n, d) => n + d.n, 0) ?? 0
+  const typeMix = (['hosted', 'proxy', 'group'] as const).filter((t) => s?.types?.[t]).map((t) => `${s!.types[t]} ${t}`).join(' · ')
 
   return (
     <>
@@ -111,21 +167,32 @@ export default function Dashboard() {
       <LoadError error={error} retry={reload} />
       {isAdmin && s && <GettingStarted setup={s.setup} />}
 
-      <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }} mb="lg">
-        {s ? <>
-          <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={plural(s.users, 'user')} />
-          <StatCard label="Artifacts" value={s.assets.toLocaleString()} icon={IconArchive} color="teal" />
-          <StatCard label="Storage used" value={formatBytes(s.storageBytes)} icon={IconServer} color="blue"
-            hint={s.logicalBytes > s.storageBytes ? `${formatBytes(s.logicalBytes - s.storageBytes)} saved by deduplication` : undefined} />
-          <StatCard label="Downloads" value={s.downloads.toLocaleString()} icon={IconCloudDownload} color="orange" />
-        </> : Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={96} radius="lg" />)}
-      </SimpleGrid>
+      <Section title="Overview">
+        <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }}>
+          {s ? <>
+            <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={typeMix || plural(s.users, 'user')} />
+            <StatCard label="Artifacts" value={s.assets.toLocaleString()} icon={IconArchive} color="teal"
+              hint={filled.length ? `in ${plural(filled.length, 'format')}` : undefined} />
+            <StatCard label="Storage on disk" value={formatBytes(s.storageBytes)} icon={IconServer} color="blue"
+              hint={s.logicalBytes > s.storageBytes ? `${formatBytes(s.logicalBytes - s.storageBytes)} saved by deduplication` : undefined} />
+            <StatCard label="Downloads" value={s.downloads.toLocaleString()} icon={IconCloudDownload} color="orange"
+              hint={`${recentDownloads.toLocaleString()} in the last 30 days`} />
+          </> : Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={96} radius="lg" />)}
+        </SimpleGrid>
+      </Section>
 
+      <Section title="Health and activity">
       {/* two independent columns: a short card is not stretched to the height of its neighbour */}
       <SimpleGrid cols={{ base: 1, md: 2 }} style={{ alignItems: 'start' }}>
-        <Stack gap="md">
         <Card padding="lg">
-          <Text fw={600} mb="md">Needs attention</Text>
+          <CardTitle title="Repository health" link={{ to: '/repositories', label: 'All repositories' }} />
+          {s && (
+            <Group gap="xs" mb="md">
+              {statuses.filter(([k]) => s.statuses?.[k] || k === 'online').map(([k, color, label]) => (
+                <Badge key={k} variant="light" color={color} radius="sm" size="lg" tt="none" fw={500}>{s.statuses?.[k] ?? 0} {label}</Badge>
+              ))}
+            </Group>
+          )}
           {!s ? <Skeleton h={28} /> : !s.attention?.length ? (
             <Group gap="sm"><ThemeIcon color="teal" variant="light" radius="xl"><IconCircleCheckFilled size={18} /></ThemeIcon>
               <Text size="sm">All repositories are healthy.</Text></Group>
@@ -142,37 +209,66 @@ export default function Dashboard() {
                       </Text>
                     </div>
                   </Group>
-                  <StatusBadge repo={r} />
+                  <div style={{ flexShrink: 0 }}><StatusBadge repo={r} /></div>
                 </Group>
               ))}
             </Stack>
           )}
         </Card>
-        <AssetList title="Recently published" assets={s?.recent} metric={(a) => timeAgo(a.createdAt)} empty="Nothing published yet. Open a hosted repository's Setup tab to publish your first artifact." />
-        </Stack>
-        <Stack gap="md">
         <Card padding="lg">
-          <Text fw={600} mb="md">Storage by format</Text>
-          {!s && <Stack gap="md">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={28} />)}</Stack>}
-          {s && !s.formats.some((f) => f.repos > 0) && <EmptyState icon={<IconDatabase />} title="No repositories yet" />}
-          <Stack gap="md">
-            {s?.formats.filter((f) => f.repos > 0).map((f) => (
-              <div key={f.format}>
-                <Group justify="space-between" mb={4}>
-                  <Group gap={6}><FormatIcon format={f.format} size={16} /><Text size="sm" fw={500}>{formatInfo(f.format).label}</Text>
-                    <Text size="xs" c="dimmed">{plural(f.repos, 'repository', 'repositories')} · {plural(f.assets, 'artifact')}</Text></Group>
-                  <Text size="sm" c="dimmed">{formatBytes(f.bytes)}</Text>
-                </Group>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: f.bytes ? `${Math.max(2, (f.bytes / maxBytes) * 100)}%` : 0, background: `var(--mantine-color-${formatInfo(f.format).color}-5)` }} />
-                </div>
-              </div>
-            ))}
-          </Stack>
+          <CardTitle title="Downloads, last 30 days" />
+          {!s ? <Skeleton h={76} /> : recentDownloads === 0
+            ? <Text size="sm" c="dimmed">No downloads in the last 30 days. Point a client at a repository (its Setup tab shows how) and they show up here.</Text>
+            : <DayChart days={s.downloadsDaily} />}
         </Card>
-        <AssetList title="Most downloaded" assets={s?.popular} metric={(a) => plural(a.downloads, 'download')} empty="No downloads yet." />
-        </Stack>
       </SimpleGrid>
+      </Section>
+
+      <Section title="Storage">
+        <Card padding="lg">
+          <CardTitle title="Where the space goes" link={isAdmin ? { to: '/storage', label: 'Storage details' } : undefined} />
+          {!s ? <Stack gap="md">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={28} />)}</Stack>
+            : !used.length ? <EmptyState icon={<IconDatabase />} title="No repositories yet" /> : <>
+              <StorageSplit s={s} />
+              <Text size="sm" fw={500} mt="lg" mb="sm">By format</Text>
+              {!filled.length && <Text size="sm" c="dimmed">Nothing stored yet.</Text>}
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl" verticalSpacing="md">
+                {filled.map((f) => (
+                  <div key={f.format}>
+                    <Group justify="space-between" mb={4} wrap="nowrap">
+                      <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                        <FormatIcon format={f.format} size={16} />
+                        <Text size="sm" fw={500} truncate="end">{formatInfo(f.format).label}</Text>
+                        <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>{plural(f.repos, 'repo')} · {plural(f.assets, 'artifact')}</Text>
+                      </Group>
+                      <Text size="sm" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                        {formatBytes(f.bytes)} <Text span size="xs">({Math.round((f.bytes / formatTotal) * 100)}%)</Text>
+                      </Text>
+                    </Group>
+                    <div className="bar-track">
+                      <div className="bar-fill" style={{ width: f.bytes ? `${Math.max(2, (f.bytes / maxBytes) * 100)}%` : 0, background: `var(--mantine-color-${formatInfo(f.format).color}-5)` }} />
+                    </div>
+                  </div>
+                ))}
+              </SimpleGrid>
+              {empty.length > 0 && (
+                <Group gap={6} mt="md">
+                  <Text size="xs" c="dimmed">Set up, still empty:</Text>
+                  {empty.map((f) => (
+                    <Badge key={f.format} variant="default" radius="sm" tt="none" fw={500} leftSection={<FormatIcon format={f.format} size={12} />}>{formatInfo(f.format).label}</Badge>
+                  ))}
+                </Group>
+              )}
+            </>}
+        </Card>
+      </Section>
+
+      <Section title="Artifacts">
+        <SimpleGrid cols={{ base: 1, md: 2 }} style={{ alignItems: 'start' }}>
+          <AssetList title="Recently published" assets={s?.recent} metric={(a) => timeAgo(a.createdAt)} empty="Nothing published yet. Open a hosted repository's Setup tab to publish your first artifact." />
+          <AssetList title="Most downloaded" assets={s?.popular} metric={(a) => plural(a.downloads, 'download')} empty="No downloads yet." />
+        </SimpleGrid>
+      </Section>
     </>
   )
 }

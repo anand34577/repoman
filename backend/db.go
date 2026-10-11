@@ -144,6 +144,7 @@ var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS downloads_daily (
 		asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, day INTEGER NOT NULL, n INTEGER NOT NULL,
 		PRIMARY KEY (asset_id, day)) WITHOUT ROWID`,
+	`CREATE INDEX IF NOT EXISTS downloads_daily_day ON downloads_daily(day)`, // dashboard trend and pruning by day
 	// one row per repository per day (repo '' = the whole installation's distinct bytes on disk), for growth charts
 	`CREATE TABLE IF NOT EXISTS storage_samples (
 		day INTEGER NOT NULL, repo TEXT NOT NULL, assets INTEGER NOT NULL, bytes INTEGER NOT NULL, downloads INTEGER NOT NULL DEFAULT 0,
@@ -219,7 +220,7 @@ var errNotFound = errors.New("not found")
 
 // ---------- repositories ----------
 
-var formats = []string{"maven", "npm", "pypi", "docker", "go", "apt", "yum", "conda", "raw"}
+var formats = []string{"maven", "npm", "pypi", "docker", "go", "apt", "yum", "conda", "cargo", "pub", "huggingface", "lfs", "alpine", "raw"}
 
 type Repo struct {
 	Name           string   `json:"name"`

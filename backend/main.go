@@ -1,5 +1,5 @@
 // RepoMan: a self-hosted artifact repository manager
-// (maven, npm, pypi, docker, go, apt, yum, conda, raw — hosted, proxy and group repositories).
+// (maven, npm, pypi, docker, go, apt, yum, conda, cargo, pub, huggingface, git-lfs, alpine, raw — hosted, proxy and group repositories).
 package main
 
 import (

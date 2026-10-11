@@ -13,7 +13,7 @@ const endpoints: [string, string, string][] = [
   ['GET', '/api/repositories/{name}/browse?path=', 'List files and folders'],
   ['GET', '/api/repositories/{name}/components?q=', 'Components and versions'],
   ['DELETE', '/api/repositories/{name}/components?component=&version=', 'Delete a component or one version'],
-  ['POST', '/api/repositories/{name}/upload', 'Multipart upload (raw, maven, go, apt, yum, conda)'],
+  ['POST', '/api/repositories/{name}/upload', 'Multipart upload (raw, maven, go, apt, yum, conda, alpine, huggingface)'],
   ['POST', '/api/repositories/{name}/cleanup?dryRun=1', 'Preview or run the cleanup policy (admin)'],
   ['GET/PUT', '/api/repositories/{name}/permissions', 'Per-user access overrides (admin)'],
   ['GET', '/api/search?q=&repo=&format=', 'Search artifacts; q accepts version:, repo:, format:, uploader:, sha256:'],

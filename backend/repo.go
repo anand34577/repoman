@@ -206,6 +206,12 @@ func probePath(format string) string {
 		return "/noarch/repodata.json" // every channel has it; only the response headers are read
 	case "apt":
 		return "/dists/"
+	case "cargo":
+		return "/config.json"
+	case "pub":
+		return "/api/packages/path"
+	case "huggingface":
+		return "/api/models?limit=1"
 	}
 	return "/"
 }
@@ -264,6 +270,8 @@ func (a *App) upstreamURL(ctx context.Context, repo *Repo, p string) (string, er
 			p = "library/" + p
 		}
 		return base + "/v2/" + p, nil
+	case "cargo":
+		return a.cargoUpstreamURL(ctx, repo, p)
 	}
 	return base + "/" + p, nil
 }
@@ -366,6 +374,14 @@ func isMetadata(format, p string) bool {
 	case "conda": // repodata.json(.zst/.bz2), current_repodata.json, repodata.jlap, repodata_shards index; shards/* are content-addressed
 		b := path.Base(p)
 		return strings.HasPrefix(b, "repodata") || strings.HasPrefix(b, "current_repodata") || b == "channeldata.json"
+	case "cargo": // the index tree changes with every publish; crate downloads (api/…) never do
+		return p == "config.json" || !strings.HasPrefix(p, "api/")
+	case "pub":
+		return strings.HasPrefix(p, "api/packages/")
+	case "huggingface":
+		return hfIsMetadata(p)
+	case "alpine":
+		return path.Base(p) == "APKINDEX.tar.gz"
 	}
 	return false
 }
@@ -419,6 +435,14 @@ func componentOf(format, p string) (comp, ver string) {
 		if m := condaFileRe.FindStringSubmatch(file); m != nil {
 			return m[1], m[2]
 		}
+	case "cargo":
+		return cargoComponent(p)
+	case "pub":
+		return pubComponent(p)
+	case "huggingface":
+		return hfComponent(p)
+	case "alpine":
+		return alpineComponent(file)
 	case "yum":
 		if strings.HasSuffix(file, ".rpm") { // name-version-release.arch.rpm
 			base := strings.TrimSuffix(file, ".rpm")
@@ -517,6 +541,9 @@ func (a *App) handleRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	u := a.authenticate(r)
 	write := r.Method != http.MethodGet && r.Method != http.MethodHead
+	if repo.Format == "lfs" && (p == "objects/batch" || p == "verify") {
+		write = false // POSTs that also serve downloads; uploading is checked inside the handler
+	}
 	if !a.can(u, repo, write) {
 		deny(w, u)
 		return
@@ -548,6 +575,16 @@ func (a *App) handleRepo(w http.ResponseWriter, r *http.Request) {
 		a.yumHandler(w, r, repo, p, u)
 	case "conda":
 		a.condaHandler(w, r, repo, p, u)
+	case "cargo":
+		a.cargoHandler(w, r, repo, p, u)
+	case "pub":
+		a.pubHandler(w, r, repo, p, u)
+	case "huggingface":
+		a.hfHandler(w, r, repo, p, u)
+	case "lfs":
+		a.lfsHandler(w, r, repo, p, u)
+	case "alpine":
+		a.alpineHandler(w, r, repo, p, u)
 	case "docker":
 		http.Error(w, "docker repositories are served at /v2/"+repo.Name+"/<image>", http.StatusNotFound)
 	default:

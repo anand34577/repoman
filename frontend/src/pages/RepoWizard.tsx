@@ -116,16 +116,16 @@ export default function RepoWizard() {
                 </Card>
               )
               return ok ? card : (
-                <Tooltip key={t} label={`${f.label} indexes are signed per repository and can't be merged. Configure clients with several sources instead.`} multiline maw={300}>
+                <Tooltip key={t} label={f.id === 'lfs' ? 'Git LFS objects live on this server only, so only a hosted repository makes sense.' : `${f.label} indexes are signed per repository and can't be merged. Configure clients with several sources instead.`} multiline maw={300}>
                   <div>{card}</div>
                 </Tooltip>
               )
             })}
           </SimpleGrid>
-          <Alert variant="light" icon={<IconInfoCircle />}>
+          {f.types.length > 1 && <Alert variant="light" icon={<IconInfoCircle />}>
             A common setup per format is <b>one hosted</b> repository for your own artifacts, <b>one proxy</b> for the public registry,
             and <b>one group</b> combining both that everyone points their tools at.
-          </Alert>
+          </Alert>}
           <Group><Button variant="default" leftSection={<IconArrowLeft size={16} />} onClick={() => setStep(0)}>Back</Button></Group>
         </Stack>
       )}
