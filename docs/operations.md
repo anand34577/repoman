@@ -135,6 +135,10 @@ identical test servers.
 
 ## Moving to another server
 
+On Linux and macOS the installer does steps 1–3 for you: stop RepoMan on the old machine, then on the new one run
+`curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- migrate-from oldserver:/var/lib/repoman`
+([details](installation.md#migrating-existing-data)). By hand:
+
 1. Install RepoMan on the new machine ([installation](installation.md)) and stop it.
 2. Stop the old one. Copy the entire data directory across (any OS and CPU architecture combination works;
    the format is the same everywhere).

@@ -4,6 +4,7 @@ RepoMan is a single executable. "Installing" it means putting that file somewher
 its data, and (usually) registering it as a service so it starts at boot. This page covers every supported
 way to do that, plus upgrading and uninstalling.
 
+- [One-line install (Linux and macOS)](#one-line-install-linux-and-macos)
 - [Choose a download](#choose-a-download)
 - [Try it without installing](#try-it-without-installing)
 - [Linux (systemd)](#linux-systemd)
@@ -14,6 +15,8 @@ way to do that, plus upgrading and uninstalling.
 - [Kubernetes](#kubernetes)
 - [First start](#first-start)
 - [Upgrading](#upgrading)
+- [Rolling back](#rolling-back)
+- [Migrating existing data](#migrating-existing-data)
 - [Uninstalling](#uninstalling)
 
 ## Requirements
@@ -25,6 +28,37 @@ way to do that, plus upgrading and uninstalling.
 | File system | A **local** disk (ext4, XFS, APFS, NTFS). Do not put the data directory on NFS/SMB: SQLite needs working file locks |
 | Network | Inbound: one TCP port (default 8081). Outbound: only the upstreams you proxy — see [firewall.md](firewall.md) |
 | Software | None. No runtime, database or package dependencies |
+
+## One-line install (Linux and macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh
+```
+
+This finds the right download for the machine (Linux or macOS; x86-64, arm64, armv7, armv6), verifies its
+SHA-256 checksum, and runs the archive's own `install.sh`, which sets RepoMan up as a service. Everything in
+[Linux](#linux-systemd) and [macOS](#macos-launchd) below applies. Running the same line later **upgrades**.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- check                       # is a newer release out? changes nothing
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- --version v1.6.0            # a specific release
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- upgrade                     # same as the plain command
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- migrate-from /srv/old-data  # install and adopt existing data (see below)
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- rollback                    # undo the last upgrade
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- uninstall [--purge]         # remove (--purge also deletes data and settings)
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- --no-service                # only the binary: no systemd/launchd
+```
+
+On macOS run it from your normal account with `sudo` (the service runs as you, not as root). Read the script
+first if you like: [`scripts/get.sh`](../scripts/get.sh) is short, and it only downloads, verifies and unpacks.
+
+Options: `--force` (allow a downgrade, reinstall the same version, replace existing data on migrate),
+`--yes` (do not ask). Environment: `RM_VERSION`, `RM_REPO=owner/name` (a fork),
+`RM_BASE_URL=https://mirror.example/repoman` for a mirror or an air-gapped file server laid out as
+`<url>/latest` (a file holding the newest tag), `<url>/vX.Y.Z/<archive>` and `<url>/vX.Y.Z/SHA256SUMS`.
+
+A download whose checksum does not match is never installed. Without `sudo`, the script asks for it by itself
+(`sudo`, falling back to `su`).
 
 ## Choose a download
 
@@ -294,34 +328,78 @@ password before changing it, read the file again or run [`repoman reset-password
 
 ## Upgrading
 
-RepoMan upgrades its database automatically at start-up; there are no manual migration steps. Downgrading is
-not supported, so **back up the data directory first** ([how](operations.md#backup-and-restore)).
+RepoMan upgrades its database automatically at start-up; there are no manual migration steps.
 
 | Installed as | Upgrade |
 |---|---|
-| Linux service | Extract the new archive and run `sudo ./install.sh` again. Settings and data are kept |
-| macOS service | Same: `sudo ./install.sh` |
-| Windows service | Same: `.\install.ps1` in an elevated PowerShell |
+| Linux or macOS service | `curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh`, or extract the new archive and run `sudo ./install.sh`. Settings and data are kept |
+| Windows service | `.\install.ps1` from the new archive in an elevated PowerShell |
 | Docker | `docker pull ghcr.io/anand34577/repoman:<new>` then recreate the container with the same volume |
 | Compose | change the tag, `docker compose pull && docker compose up -d` |
 | Manual | stop RepoMan, replace the binary, start it |
 
+On Linux and macOS the installer makes the upgrade reversible. When the version changes it
+
+1. stops the service,
+2. **backs up the database** to `<data dir>/backups/<time>-v<old version>/` (the newest three are kept; the
+   artifact files are never rewritten by an upgrade and are not copied),
+3. keeps the old program as `/usr/local/bin/repoman.prev`,
+4. installs the new version, starts it and waits until it answers.
+
+It **refuses to downgrade** (a newer database cannot be read by an older program) unless you add `--force`.
 During the few seconds of restart, clients get connection errors; build tools retry. Requests in flight get
 up to 30 seconds to finish before the old process exits.
 
 Read the [changelog](../CHANGELOG.md) before upgrading across versions; anything that needs your attention is
-listed under **Upgrade notes**.
+listed under **Upgrade notes**. For the other install types, **back up the data directory first**
+([how](operations.md#backup-and-restore)).
+
+## Rolling back
+
+Right after an upgrade that went wrong (Linux and macOS):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- rollback
+# or, offline:  sudo /usr/local/share/repoman/install.sh --rollback
+```
+
+This stops the service, puts the previous program back and **restores the database from before the upgrade**,
+so anything created since the upgrade (new artifacts, users, settings) is lost. The database that was replaced
+is kept in `<data dir>/backups/rolled-back-<time>` in case you need something from it. It asks for
+confirmation (`--yes` to skip). Rollback is available until the next upgrade replaces the saved copy.
+
+## Migrating existing data
+
+To bring existing data under the service, install and adopt it in one step:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- migrate-from /path/to/old/data          # a directory on this machine
+curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- migrate-from oldserver:/var/lib/repoman # fetched over ssh from another machine
+```
+
+Sources that work: a `./data` directory from running `./repoman` by hand, a Docker volume
+(`/var/lib/docker/volumes/<name>/_data`), a copy of a data directory from any other operating system or CPU
+architecture, or a backup. **Stop RepoMan at the source first** so its database is copied in one piece.
+
+If this machine already holds a database, the command stops with a message; add `--force` to replace it. The
+data that was there is moved to `<data dir>.before-migrate-<time>`, never deleted. Afterwards the migrated
+accounts, repositories and artifacts are live; ownership and permissions are fixed for you.
+
+What does **not** move with the data: settings that come from the environment (`RM_ADDR`, TLS certificate
+paths, `RM_TRUSTED_PROXIES`, proxy variables). Copy the lines you need from the old `repoman.env` into the new
+one (`/etc/repoman/repoman.env` on Linux, `/usr/local/etc/repoman/repoman.env` on macOS) and restart. If the
+public URL changed, update *Settings → Base URL*. See also [Moving to another server](operations.md#moving-to-another-server).
 
 ## Uninstalling
 
 | Installed as | Remove |
 |---|---|
-| Linux | `sudo ./install.sh --uninstall` |
-| macOS | `sudo ./install.sh --uninstall` |
+| Linux | `sudo ./install.sh --uninstall`, or `curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- uninstall` |
+| macOS | `sudo ./install.sh --uninstall`, or `curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh -s -- uninstall` |
 | Windows | `.\install.ps1 -Uninstall` |
 | Docker | `docker rm -f repoman` |
 
 The uninstallers keep the data directory and settings, because deleting your artifacts should be a
-deliberate act. Remove them yourself when you are sure:
+deliberate act. On Linux and macOS, `--purge` removes them too (after a confirmation). Remove them yourself when you are sure:
 `/var/lib/repoman` and `/etc/repoman` (Linux), `/usr/local/var/repoman` and `/usr/local/etc/repoman` (macOS),
 `C:\ProgramData\RepoMan` (Windows), `docker volume rm repoman-data` (Docker).
