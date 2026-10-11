@@ -5,6 +5,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0]
+
+Five more formats, and a dashboard that is easier to read and no longer counts groups twice.
+
+### Upgrade notes
+
+- The first start adds an index on the daily download counters, for the dashboard's 30-day chart. On a large database
+  this takes a moment.
+- The new formats need no configuration; create repositories for them in the wizard.
+
 ### Added
 
 - Formats: Rust / Cargo (sparse registry), Dart / Flutter (pub), Hugging Face, Git LFS and Alpine (apk).
