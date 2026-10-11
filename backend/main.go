@@ -449,6 +449,17 @@ func (a *App) routes() http.Handler {
 	handle("GET /api/repositories/{name}/permissions", roleAdmin, a.getPermsAPI)
 	handle("PUT /api/repositories/{name}/permissions", roleAdmin, a.putPermsAPI)
 
+	handle("GET /api/repositories/{name}/package", roleViewer, a.packageAPI)
+	handle("GET /api/repositories/{name}/dependents", roleViewer, a.dependentsAPI)
+	handle("GET /api/repositories/{name}/checksums", roleViewer, a.checksumsAPI)
+	handle("POST /api/repositories/{name}/promote", roleViewer, a.promoteAPI)
+	handle("POST /api/repositories/{name}/bulk-delete", roleViewer, a.bulkDeleteAPI)
+	handle("GET /api/assets/{id}/downloads", roleViewer, a.assetDownloadsAPI)
+	handle("GET /api/storage", roleAdmin, a.storageAPI)
+	handle("GET /api/saved-searches", roleViewer, a.listSavedSearchesAPI)
+	handle("POST /api/saved-searches", roleViewer, a.saveSearchAPI)
+	handle("DELETE /api/saved-searches/{id}", roleViewer, a.deleteSavedSearchAPI)
+
 	handle("GET /api/search", roleViewer, a.searchAPI)
 	handle("DELETE /api/assets/{id}", roleViewer, a.deleteAssetAPI)
 	handle("GET /api/stats", roleViewer, a.statsAPI)

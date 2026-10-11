@@ -2,16 +2,17 @@ import {
   ActionIcon, Alert, AppShell, Avatar, Burger, Button, Center, Divider, Group, Kbd, Loader, Menu, NavLink, Paper, PasswordInput,
   ScrollArea, SimpleGrid, Stack, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton, useComputedColorScheme, useMantineColorScheme,
 } from '@mantine/core'
-import { useDisclosure, useHotkeys } from '@mantine/hooks'
+import { useDebouncedValue, useDisclosure, useHotkeys } from '@mantine/hooks'
 import { Spotlight, spotlight, type SpotlightActionGroupData } from '@mantine/spotlight'
 import {
-  IconActivity, IconBell, IconBook, IconLogin2, IconBox, IconChevronDown, IconClockPlay, IconDatabase, IconKey, IconLayoutDashboard, IconLogout,
+  IconActivity, IconBell, IconBook, IconChartAreaLine, IconPackage, IconLogin2, IconBox, IconChevronDown, IconClockPlay, IconDatabase, IconKey, IconLayoutDashboard, IconLogout,
   IconMoon, IconPlus, IconSearch, IconSettings, IconShieldLock, IconSpeakerphone, IconSun, IconUsers, IconWebhook,
 } from '@tabler/icons-react'
 import { createContext, lazy, Suspense, useContext, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { notifications } from '@mantine/notifications'
-import { api, clearApiCache, useApi, type OidcPublic, type Repo, type Settings, type User } from './api'
+import { api, clearApiCache, useApi, type Asset, type OidcPublic, type Repo, type Settings, type User } from './api'
+import { assetLink, packageLink } from './links'
 import { FormatIcon, FORMATS } from './formats'
 import Dashboard from './pages/Dashboard'
 import { ErrorBoundary, MOD_KEY, useValidation } from './util'
@@ -20,11 +21,13 @@ const Account = lazy(() => import('./pages/Account'))
 const AuditLog = lazy(() => import('./pages/Audit'))
 const Help = lazy(() => import('./pages/Help'))
 const Notifications = lazy(() => import('./pages/Notifications'))
+const PackagePage = lazy(() => import('./pages/PackagePage'))
 const RepoDetail = lazy(() => import('./pages/RepoDetail'))
 const Repositories = lazy(() => import('./pages/Repositories'))
 const RepoWizard = lazy(() => import('./pages/RepoWizard'))
 const Search = lazy(() => import('./pages/Search'))
 const SettingsPage = lazy(() => import('./pages/Settings'))
+const Storage = lazy(() => import('./pages/Storage'))
 const Tasks = lazy(() => import('./pages/Tasks'))
 const Users = lazy(() => import('./pages/Users'))
 const Webhooks = lazy(() => import('./pages/Webhooks'))
@@ -81,6 +84,16 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
   const [bannerHidden, setBannerHidden] = useState<string>()
   const searchRef = useRef<HTMLInputElement>(null)
   const isAdmin = user.role === 'admin'
+  // the palette also finds packages: what is typed is searched on the server (debounced), grouped by package and version
+  const [paletteQuery, setPaletteQuery] = useState('')
+  const [dq] = useDebouncedValue(paletteQuery.trim(), 250)
+  const [hits, setHits] = useState<Asset[]>([])
+  useEffect(() => {
+    if (dq.length < 3) { setHits([]); return }
+    let stale = false
+    api<Asset[]>(`/search?q=${encodeURIComponent(dq)}&limit=40&sort=downloads`).then((r) => { if (!stale) setHits(r) }).catch(() => { if (!stale) setHits([]) })
+    return () => { stale = true }
+  }, [dq])
   useHotkeys([['/', () => searchRef.current?.focus()]])
 
   const sections = [
@@ -97,6 +110,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
         { to: '/notifications', label: 'Notifications', icon: IconBell },
         { to: '/webhooks', label: 'Webhooks', icon: IconWebhook },
         { to: '/tasks', label: 'Scheduled tasks', icon: IconClockPlay },
+        { to: '/storage', label: 'Storage', icon: IconChartAreaLine },
         { to: '/audit', label: 'Audit log', icon: IconActivity },
         { to: '/settings', label: 'Settings', icon: IconSettings },
       ],
@@ -119,6 +133,13 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
         { id: 'theme', label: `Switch to ${scheme === 'dark' ? 'light' : 'dark'} theme`, leftSection: scheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />, onClick: () => setColorScheme(scheme === 'dark' ? 'light' : 'dark') },
       ],
     },
+    ...(hits.length ? [{
+      group: 'Packages and artifacts', actions: [...new Map(hits.map((h) => [h.component ? `${h.repo}\u0000${h.component}\u0000${h.version}` : h.id, h])).values()].slice(0, 8).map((h) => ({
+        id: 'hit-' + h.id, label: h.component ? `${h.component}${h.version ? ' ' + h.version : ''}` : h.path.split('/').pop()!, description: `${h.repo}${h.component ? '' : ' · ' + h.path}`,
+        keywords: [paletteQuery], leftSection: <IconPackage size={18} />,
+        onClick: () => navigate(h.component ? packageLink(h.repo, h.component, h.version) : assetLink(h)),
+      })),
+    }] : []),
     {
       group: 'Repositories', actions: (repos.data ?? []).map((r) => ({
         id: 'repo-' + r.name, label: r.name, description: `${FORMATS.find((f) => f.id === r.format)?.label} ${r.type}${r.description ? ' — ' + r.description : ''}`,
@@ -132,8 +153,8 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
   return (
     <AuthContext.Provider value={ctx}>
       <Spotlight actions={spotlightActions} nothingFound="Nothing found" highlightQuery limit={12} shortcut={['mod + K']}
-        onSpotlightOpen={repos.reload} scrollable maxHeight={420}
-        searchProps={{ leftSection: <IconSearch size={18} />, placeholder: 'Jump to a page, repository or action…' }} />
+        onSpotlightOpen={repos.reload} scrollable maxHeight={420} onQueryChange={setPaletteQuery}
+        searchProps={{ leftSection: <IconSearch size={18} />, placeholder: 'Jump to a page, repository, package or action…' }} />
       <a href="#main" className="skip-link">Skip to content</a>
       <AppShell header={{ height: 60 }} navbar={{ width: 256, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'md', sm: 'xl' }}>
         <AppShell.Header px="md" className="app-header">
@@ -220,6 +241,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
             <Route path="/" element={<Dashboard />} />
             <Route path="/repositories" element={<Repositories />} />
             {isAdmin && <Route path="/repositories/new" element={<RepoWizard />} />}
+            <Route path="/repositories/:name/package" element={<PackagePage />} />
             <Route path="/repositories/:name/*" element={<RepoDetail />} />
             <Route path="/search" element={<Search />} />
             <Route path="/account" element={<Account />} />
@@ -229,6 +251,7 @@ function Shell({ user, logout }: { user: User; logout: () => void }) {
               <Route path="/notifications" element={<Notifications />} />
               <Route path="/webhooks" element={<Webhooks />} />
               <Route path="/tasks" element={<Tasks />} />
+              <Route path="/storage" element={<Storage />} />
               <Route path="/audit" element={<AuditLog />} />
               <Route path="/settings/*" element={<SettingsPage />} />
             </>}
@@ -254,7 +277,9 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
 
   useEffect(() => {
     api<OidcPublic>('/auth/oidc/config').then(setSso).catch(() => undefined)
-    if (window.location.search) window.history.replaceState(null, '', window.location.pathname) // keep the URL clean
+    // keep the URL clean after an SSO redirect, but leave other queries alone: a deep link (a package page) must survive signing in
+    const sp = new URLSearchParams(window.location.search)
+    if (sp.has('oidc') || sp.has('oidc_error')) window.history.replaceState(null, '', window.location.pathname)
   }, [])
 
   const v = useValidation({ username: !username.trim() && 'Enter your username', password: !password && 'Enter your password' })

@@ -12,3 +12,7 @@ export function downloadUrl(a: Asset, format: string) {
   if (format === 'pypi' && a.path.startsWith('simple/')) return `/repository/${a.repo}/${a.path.replace(/index\.html$/, '')}`
   return `/repository/${a.repo}/${a.path}`
 }
+
+/** The package page of a component (and optionally one of its versions) in a repository. */
+export const packageLink = (repo: string, component: string, version = '') =>
+  `/repositories/${repo}/package?component=${encodeURIComponent(component)}${version ? `&version=${encodeURIComponent(version)}` : ''}`

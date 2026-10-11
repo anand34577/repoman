@@ -1,5 +1,5 @@
 import {
-  ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Button, Card, Code, Drawer, Group, Loader, Menu, Modal, Progress, Select, SimpleGrid, Skeleton,
+  ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Button, Card, Checkbox, Code, Drawer, Group, Loader, Menu, Modal, Progress, Select, SimpleGrid, Skeleton,
   Stack, Switch, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip,
 } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
@@ -17,11 +17,12 @@ import {
 } from '../api'
 import { formatInfo } from '../formats'
 import { clientGuides, repoUrl } from '../setup'
+import { AssetDownloads, Checksums, PROMOTABLE, PromoteModal, UsageTabs, useRepoToken } from '../usage'
 import {
   confirmAction, confirmTyped, Copy, EmptyState, formatBytes, FormatBadge, fullDate, notifyError, notifyOk, Pager, plural, StatusBadge, timeAgo, TypeBadge, usePaging, useUnsavedGuard, When,
 } from '../util'
 import { RepoSettingsFields } from './RepoConfig'
-import { downloadUrl } from '../links'
+import { downloadUrl, packageLink } from '../links'
 
 export default function RepoDetail() {
   const { name = '', '*': sub } = useParams()
@@ -205,6 +206,20 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
   const [uploading, setUploading] = useState(false)
   const upload = formatInfo(repo.format).upload
   const canUpload = canWrite && repo.type === 'hosted' && !!upload
+  const bulk = canWrite && repo.type !== 'group'
+  // what is ticked, kept across pages of one folder: key "f:<id>" for a file, "d:<path>" for a folder
+  const [sel, setSel] = useState<Record<string, true>>({})
+  useEffect(() => setSel({}), [path, repo.name])
+  const keyOf = (e: BrowseEntry) => (e.folder ? 'd:' + e.path : 'f:' + e.asset!.id)
+  const picked = Object.keys(sel)
+  const toggleSel = (k: string) => setSel((cur) => { const n = { ...cur }; if (n[k]) delete n[k]; else n[k] = true; return n })
+  const deleteSelected = () => confirmAction({
+    title: `Delete ${plural(picked.length, 'selected item')}?`, danger: true, label: 'Delete',
+    body: <Text size="sm">{picked.some((k) => k[0] === 'd') ? 'Selected folders are deleted with everything inside them. ' : ''}This cannot be undone.</Text>,
+    onConfirm: () => api<{ deleted: number }>(`/repositories/${repo.name}/bulk-delete`, { body: {
+      ids: picked.filter((k) => k[0] === 'f').map((k) => Number(k.slice(2))), prefixes: picked.filter((k) => k[0] === 'd').map((k) => k.slice(2)),
+    } }).then((r) => { notifyOk(`Deleted ${plural(r.deleted, 'file')}`); setSel({}); reload(); onChanged() }).catch(notifyError),
+  })
 
   // opening a file keeps the page; changing folder starts at its first page
   const go = (p: string, select?: string) => setParams((cur) => {
@@ -235,19 +250,32 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
           {canUpload && <Button size="xs" leftSection={<IconUpload size={14} />} onClick={() => setUploading(true)}>Upload</Button>}
         </Group>
       </Group>
+      {picked.length > 0 && (
+        <Group px="md" pb="xs" gap="sm">
+          <Text size="sm" fw={500}>{plural(picked.length, 'item')} selected</Text>
+          <Button size="compact-xs" color="red" variant="light" leftSection={<IconTrash size={14} />} onClick={deleteSelected}>Delete selected</Button>
+          <Button size="compact-xs" variant="subtle" color="gray" onClick={() => setSel({})}>Clear</Button>
+        </Group>
+      )}
       <Table.ScrollContainer minWidth={300}>
         <Table highlightOnHover verticalSpacing="xs" horizontalSpacing="md" style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
           <Table.Thead>
-            <Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th visibleFrom="sm">Updated</Table.Th><Table.Th ta="right" visibleFrom="sm">Downloads</Table.Th></Table.Tr>
+            <Table.Tr>
+              {bulk && <Table.Th w={36}><Checkbox size="xs" aria-label="Select all on this page" checked={!!rows?.length && rows.every((e) => sel[keyOf(e)])}
+                indeterminate={picked.length > 0 && !rows?.every((e) => sel[keyOf(e)])}
+                onChange={(ev) => { const on = ev.currentTarget.checked; setSel((cur) => { const n = { ...cur }; rows?.forEach((e) => { if (on) n[keyOf(e)] = true; else delete n[keyOf(e)] }); return n }) }} /></Table.Th>}
+              <Table.Th>Name</Table.Th>{repo.type === 'group' && <Table.Th visibleFrom="sm">Served from</Table.Th>}<Table.Th ta="right">Size</Table.Th><Table.Th visibleFrom="sm">Updated</Table.Th><Table.Th ta="right" visibleFrom="sm">Downloads</Table.Th>
+            </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {path && (
               <Table.Tr className="row-link" tabIndex={0} aria-label="Up one folder" onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => go(parts.slice(0, -1).join('/'))}>
-                <Table.Td colSpan={4}><Group gap="xs"><IconArrowLeft size={16} /><Text size="sm">..</Text></Group></Table.Td>
+                <Table.Td colSpan={4 + (bulk ? 1 : 0) + (repo.type === 'group' ? 1 : 0)}><Group gap="xs"><IconArrowLeft size={16} /><Text size="sm">..</Text></Group></Table.Td>
               </Table.Tr>
             )}
             {rows?.map((e) => (
               <Table.Tr key={e.path + e.folder} className="row-link" tabIndex={0} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => (e.folder ? go(e.path) : go(path, e.path))}>
+                {bulk && <Table.Td onClick={(ev) => ev.stopPropagation()}><Checkbox size="xs" aria-label={`Select ${e.name}`} checked={!!sel[keyOf(e)]} onChange={() => toggleSel(keyOf(e))} /></Table.Td>}
                 <Table.Td>
                   <Group gap="xs" wrap="nowrap">
                     {e.folder ? <IconFolder size={18} color="var(--mantine-color-yellow-6)" /> : <IconFile size={18} color="var(--mantine-color-dimmed)" />}
@@ -255,6 +283,7 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
                     {e.asset?.uploader === 'system' && <Tooltip label="Generated automatically"><Badge size="xs" variant="light" color="gray">index</Badge></Tooltip>}
                   </Group>
                 </Table.Td>
+                {repo.type === 'group' && <Table.Td visibleFrom="sm">{e.asset && <Anchor component={Link} to={`/repositories/${e.asset.repo}`} size="sm" onClick={(ev) => ev.stopPropagation()}>{e.asset.repo}</Anchor>}</Table.Td>}
                 <Table.Td ta="right"><Text size="sm" c="dimmed" style={{ whiteSpace: 'nowrap' }}>{e.folder ? `${plural(e.count ?? 0, 'file')} · ${formatBytes(e.size)}` : formatBytes(e.asset!.size)}</Text></Table.Td>
                 <Table.Td visibleFrom="sm">{e.asset && <When unix={e.asset.updatedAt} never="—" />}</Table.Td>
                 <Table.Td ta="right" visibleFrom="sm"><Text size="sm" c="dimmed">{e.asset?.downloads.toLocaleString()}</Text></Table.Td>
@@ -271,7 +300,7 @@ function Browse({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boolean; 
           action={canUpload ? <Button onClick={() => setUploading(true)} leftSection={<IconUpload size={16} />}>Upload files</Button>
             : <Button component={Link} to={`/repositories/${repo.name}/setup`} variant="light">Show setup instructions</Button>}>
           {repo.type === 'proxy' ? 'Artifacts appear here as soon as a client requests them through this proxy.'
-            : repo.type === 'group' ? 'Groups show nothing themselves — browse their member repositories instead.'
+            : repo.type === 'group' ? 'None of its member repositories holds any artifacts yet.'
               : 'Publish with your usual tools (see Setup) or upload files directly.'}
         </EmptyState>
       )}
@@ -324,6 +353,7 @@ function AssetDrawer({ asset, repo, canWrite, onClose, onDeleted }: { asset?: As
           <Group>
             <Button component="a" href={downloadUrl(asset, repo.format)} target="_blank" leftSection={<IconDownload size={16} />}>Download</Button>
             <Group gap={4}><Text size="sm" c="dimmed">Copy URL</Text><Copy value={url} label="Copy download URL" /></Group>
+            {asset.component && <Button component={Link} to={packageLink(repo.name, asset.component, asset.version)} variant="light" leftSection={<IconPackage size={16} />}>Package page</Button>}
             {canWrite && repo.type !== 'group' && <Button variant="light" color="red" leftSection={<IconTrash size={16} />} onClick={() => del(asset)}>Delete</Button>}
           </Group>
           <Table variant="vertical" layout="fixed" withTableBorder>
@@ -331,6 +361,9 @@ function AssetDrawer({ asset, repo, canWrite, onClose, onDeleted }: { asset?: As
               {rows.map(([k, v]) => <Table.Tr key={k}><Table.Th w={140}>{k}</Table.Th><Table.Td>{v}</Table.Td></Table.Tr>)}
             </Table.Tbody>
           </Table>
+          {asset.component && <UsageTabs repo={repo} component={asset.component} version={asset.version} file={asset.path} />}
+          <Checksums asset={asset} repo={repo} />
+          <AssetDownloads id={asset.id} />
           {pkg.length > 0 && <>
             <Text fw={600} size="sm">Package metadata</Text>
             <Table variant="vertical" layout="fixed" withTableBorder>
@@ -444,8 +477,7 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
   const set = (key: string, value: string) => setParams((p) => { if (value) p.set(key, value); else p.delete(key); p.delete('page'); return p }, { replace: true })
   const [open, setOpen] = useState<string>()
   const [allVersions, setAllVersions] = useState(false)
-  const { data, total, loading, reload } = useApi<Component[]>(repo.type === 'group' ? null
-    : `/repositories/${repo.name}/components?q=${encodeURIComponent(dq)}&sort=${sort}&${paging.query}`)
+  const { data, total, loading, reload } = useApi<Component[]>(`/repositories/${repo.name}/components?q=${encodeURIComponent(dq)}&sort=${sort}&${paging.query}`)
   const toggle = (name: string) => { setOpen(open === name ? undefined : name); setAllVersions(false) }
   const del = (c: string, v?: string) => confirmAction({
     title: v ? `Delete ${c} ${v}?` : `Delete all versions of ${c}?`, danger: true, label: 'Delete',
@@ -454,9 +486,21 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
       .then((r) => { notifyOk(`Deleted ${plural(r.deleted, 'file')}`); reload(); onChanged() }).catch(notifyError),
   })
 
-  if (repo.type === 'group') return (
-    <EmptyState icon={<IconPackage />} title="Groups don't store components">Open a member repository to see its components: {repo.members?.join(', ')}.</EmptyState>
-  )
+  const [using, setUsing] = useState<{ name: string; version: string }>()
+  const bulk = canWrite && repo.type !== 'group'
+  // ticked packages: "<component>\u0000<version>", an empty version meaning every version
+  const [sel, setSel] = useState<Record<string, true>>({})
+  const [promoting, setPromoting] = useState<{ component: string; version: string }[]>()
+  useEffect(() => setSel({}), [repo.name])
+  const picked = Object.keys(sel).map((k) => { const [component, version] = k.split('\u0000'); return { component, version } })
+  const toggleSel = (c: string, v = '') => setSel((cur) => { const n = { ...cur }; const k = c + '\u0000' + v; if (n[k]) delete n[k]; else n[k] = true; return n })
+  const canPromote = PROMOTABLE.includes(repo.format)
+  const deleteSelected = () => confirmAction({
+    title: `Delete ${plural(picked.length, 'selected package')}?`, danger: true, label: 'Delete',
+    body: <Text size="sm">Every file of the selected versions (or of all versions where only the package is ticked) is removed. This cannot be undone.</Text>,
+    onConfirm: () => api<{ deleted: number }>(`/repositories/${repo.name}/bulk-delete`, { body: { components: picked } })
+      .then((r) => { notifyOk(`Deleted ${plural(r.deleted, 'file')}`); setSel({}); reload(); onChanged() }).catch(notifyError),
+  })
   return (
     <Card padding={0}>
       <Group p="md" justify="space-between">
@@ -468,41 +512,52 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
             onChange={(e) => { setQ(e.currentTarget.value); set('q', e.currentTarget.value) }} />
         </Group>
       </Group>
+      {picked.length > 0 && (
+        <Group px="md" pb="xs" gap="sm">
+          <Text size="sm" fw={500}>{plural(picked.length, 'package')} selected</Text>
+          {canPromote && <Button size="compact-xs" variant="light" leftSection={<IconBolt size={14} />} onClick={() => setPromoting(picked)}>Promote…</Button>}
+          <Button size="compact-xs" color="red" variant="light" leftSection={<IconTrash size={14} />} onClick={deleteSelected}>Delete selected</Button>
+          <Button size="compact-xs" variant="subtle" color="gray" onClick={() => setSel({})}>Clear</Button>
+        </Group>
+      )}
       <Table.ScrollContainer minWidth={700}>
         <Table verticalSpacing="xs" horizontalSpacing="md" highlightOnHover style={{ opacity: loading && data ? 0.6 : 1 }} aria-busy={loading}>
           <Table.Thead>
-            <Table.Tr><Table.Th w={30} /><Table.Th>Component</Table.Th><Table.Th>Latest</Table.Th><Table.Th ta="right">Versions</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th ta="right">Downloads</Table.Th><Table.Th>Updated</Table.Th><Table.Th /></Table.Tr>
+            <Table.Tr>{bulk && <Table.Th w={36} />}<Table.Th w={30} /><Table.Th>Component</Table.Th><Table.Th>Latest</Table.Th><Table.Th ta="right">Versions</Table.Th><Table.Th ta="right">Size</Table.Th><Table.Th ta="right">Downloads</Table.Th><Table.Th>Updated</Table.Th><Table.Th /></Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {data?.map((c) => (
               <Fragment key={c.name}>
                 <Table.Tr className="row-link" tabIndex={0} aria-expanded={c.versions.length > 0 ? open === c.name : undefined} onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && (ev.preventDefault(), (ev.currentTarget as HTMLElement).click())} onClick={() => toggle(c.name)}>
+                  {bulk && <Table.Td onClick={(e) => e.stopPropagation()}><Checkbox size="xs" aria-label={`Select ${c.name}`} checked={!!sel[c.name + '\u0000']} onChange={() => toggleSel(c.name)} /></Table.Td>}
                   <Table.Td>{c.versions.length > 0 && (open === c.name ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />)}</Table.Td>
-                  <Table.Td><Text size="sm" fw={500} style={{ wordBreak: 'break-all' }}>{c.name}</Text></Table.Td>
+                  <Table.Td><Anchor component={Link} to={packageLink(repo.name, c.name, c.versions[0]?.version)} size="sm" fw={500} style={{ wordBreak: 'break-all' }} onClick={(e) => e.stopPropagation()}>{c.name}</Anchor></Table.Td>
                   <Table.Td>{c.versions[0] ? <Badge variant="light" radius="sm">{c.versions[0].version}</Badge> : '—'}</Table.Td>
                   <Table.Td ta="right">{c.versions.length}</Table.Td>
                   <Table.Td ta="right">{formatBytes(c.size)}</Table.Td>
                   <Table.Td ta="right">{c.downloads.toLocaleString()}</Table.Td>
                   <Table.Td><When unix={c.updatedAt} never="—" /></Table.Td>
                   <Table.Td onClick={(e) => e.stopPropagation()}>
-                    {canWrite && <Tooltip label="Delete component"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name)} aria-label="Delete component"><IconTrash size={16} /></ActionIcon></Tooltip>}
+                    {canWrite && repo.type !== 'group' && <Tooltip label="Delete component"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name)} aria-label="Delete component"><IconTrash size={16} /></ActionIcon></Tooltip>}
                   </Table.Td>
                 </Table.Tr>
                 {open === c.name && (allVersions ? c.versions : c.versions.slice(0, VERSIONS_SHOWN)).map((v) => (
                   <Table.Tr key={v.version} bg="var(--mantine-color-default-hover)">
+                    {bulk && <Table.Td><Checkbox size="xs" aria-label={`Select ${c.name} ${v.version}`} checked={!!sel[c.name + '\u0000' + v.version]} onChange={() => toggleSel(c.name, v.version)} /></Table.Td>}
                     <Table.Td />
-                    <Table.Td colSpan={2}><Group gap="xs"><Text size="sm" ff="monospace">{v.version}</Text><Text size="xs" c="dimmed">{plural(v.assets, 'file')}</Text></Group></Table.Td>
+                    <Table.Td colSpan={2}><Group gap="xs"><Anchor component={Link} to={packageLink(repo.name, c.name, v.version)} size="sm" ff="monospace">{v.version}</Anchor><Text size="xs" c="dimmed">{plural(v.assets, 'file')}</Text>
+                      <Button size="compact-xs" variant="light" onClick={() => setUsing({ name: c.name, version: v.version })}>Use</Button></Group></Table.Td>
                     <Table.Td />
                     <Table.Td ta="right">{formatBytes(v.size)}</Table.Td>
                     <Table.Td ta="right">{v.downloads.toLocaleString()}</Table.Td>
                     <Table.Td><When unix={v.updatedAt} never="—" /></Table.Td>
-                    <Table.Td>{canWrite && <Tooltip label="Delete version"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name, v.version)} aria-label="Delete version"><IconTrash size={16} /></ActionIcon></Tooltip>}</Table.Td>
+                    <Table.Td>{canWrite && repo.type !== 'group' && <Tooltip label="Delete version"><ActionIcon variant="subtle" color="red" onClick={() => del(c.name, v.version)} aria-label="Delete version"><IconTrash size={16} /></ActionIcon></Tooltip>}</Table.Td>
                   </Table.Tr>
                 ))}
                 {open === c.name && !allVersions && c.versions.length > VERSIONS_SHOWN && (
                   <Table.Tr bg="var(--mantine-color-default-hover)">
                     <Table.Td />
-                    <Table.Td colSpan={7}>
+                    <Table.Td colSpan={7 + (bulk ? 1 : 0)}>
                       <Button size="compact-xs" variant="subtle" onClick={() => setAllVersions(true)}>Show all {c.versions.length.toLocaleString()} versions</Button>
                     </Table.Td>
                   </Table.Tr>
@@ -514,6 +569,10 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
       </Table.ScrollContainer>
       {loading && !data && <Group justify="center" p="xl"><Loader size="sm" /></Group>}
       <Pager paging={paging} total={total} noun="components" />
+      {promoting && <PromoteModal repo={repo} items={promoting} canMove={repo.type === 'hosted' && canWrite} onClose={() => setPromoting(undefined)} onDone={() => { setSel({}); reload(); onChanged() }} />}
+      <Modal opened={!!using} onClose={() => setUsing(undefined)} size="lg" title={<Text fw={600}>{using?.name} {using?.version}</Text>}>
+        {using && <UsageTabs repo={repo} component={using.name} version={using.version} />}
+      </Modal>
       {!loading && data?.length === 0 && !total && <EmptyState icon={<IconPackage />} title={q ? 'No matching components' : 'No components yet'}>
         {repo.format === 'raw' ? 'Raw repositories store plain files — use the Browse tab.' : 'Components appear once packages are published or cached.'}
       </EmptyState>}
@@ -525,18 +584,10 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
 
 function Setup({ repo, base }: { repo: Repo; base: string }) {
   const { user } = useAuth()
-  const [token, setToken] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { token, busy, generate } = useRepoToken(repo)
   const guides = useMemo(() => clientGuides(base, repo, user.username, token || '<YOUR_API_TOKEN>'), [base, repo, user.username, token])
   const [tab, setTab] = useState<string | null>(null)
   const active = guides.find((g) => g.id === tab) ?? guides[0]
-
-  const generate = () => {
-    setBusy(true)
-    api<{ token: string }>('/tokens', { body: { name: `${repo.name} setup`, scope: repo.type === 'hosted' ? 'write' : 'read', expiresDays: 365 } })
-      .then((r) => { setToken(r.token); notifyOk('Token created and filled into the snippets below. Copy them now — the token is not shown again.', 'API token created') })
-      .catch(notifyError).finally(() => setBusy(false))
-  }
 
   return (
     <Stack maw={920}>
@@ -554,6 +605,15 @@ function Setup({ repo, base }: { repo: Repo; base: string }) {
           {!token && <Button size="xs" variant="light" onClick={generate} loading={busy}>Generate token</Button>}
         </Group>
       </Card>
+      {repo.type === 'group' && (
+        <Card padding="md">
+          <Text fw={600} size="sm" mb={4}>Resolution order</Text>
+          <Text size="xs" c="dimmed" mb="xs">Clients ask the members in this order and get the first answer, so put private repositories before public proxies. Change it under Configuration.</Text>
+          <Group gap="xs">{repo.members?.map((m, i) => (
+            <Badge key={m} variant="light" color="gray" size="lg" radius="sm" leftSection={<Text span size="xs" fw={700}>{i + 1}</Text>}><Anchor component={Link} to={`/repositories/${m}`} size="xs" c="inherit">{m}</Anchor></Badge>
+          ))}</Group>
+        </Card>
+      )}
       {repo.type !== 'hosted' && (
         <Alert variant="light" icon={<IconInfoCircle />} py="xs">
           {repo.type === 'group' ? 'Groups are read-only: publish to a hosted member and consume through this group.' : 'Proxy repositories are read-only and fill their cache on first request.'}

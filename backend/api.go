@@ -102,6 +102,14 @@ func (a *App) repoFor(r *http.Request, u *User, write bool) (*Repo, error) {
 
 func (a *App) view(u *User, repo *Repo, stats map[string]repoView) repoView {
 	v := stats[repo.Name]
+	if repo.Type == "group" { // a group stores nothing itself: show what its members hold
+		v = repoView{}
+		for _, n := range a.holders(repo) {
+			v.AssetCount += stats[n].AssetCount
+			v.Size += stats[n].Size
+			v.Downloads += stats[n].Downloads
+		}
+	}
 	v.Repo = redact(repo)
 	v.Status, v.Health = a.status(repo)
 	v.Access = a.access(u, repo)
@@ -179,10 +187,10 @@ func (a *App) getRepoAPI(w http.ResponseWriter, r *http.Request, u *User) (any, 
 	if err != nil {
 		return nil, err
 	}
-	stats := map[string]repoView{}
-	var v repoView
-	a.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size),0), COALESCE(SUM(downloads),0) FROM assets WHERE repo=?`, repo.Name).Scan(&v.AssetCount, &v.Size, &v.Downloads)
-	stats[repo.Name] = v
+	stats, err := a.repoStats()
+	if err != nil {
+		return nil, err
+	}
 	return a.view(u, repo, stats), nil
 }
 
@@ -361,10 +369,12 @@ func (a *App) browseAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	filter := strings.ToLower(r.URL.Query().Get("q"))
 	limit, offset := pageParams(r, 1000)
 	under, uargs := prefixWhere(prefix)
+	held, hargs := a.repoIs(repo)
+	uargs = append(hargs, uargs...)
 	start := utf8.RuneCountInString(prefix) + 1 // substr counts characters, not bytes
 	rows, err := a.db.Query(`SELECT substr(rest, 1, instr(rest, '/')-1) AS dir, COUNT(*), SUM(size)
-		FROM (SELECT substr(path, ?) AS rest, size FROM assets WHERE repo=?`+under+`)
-		WHERE instr(rest, '/') > 0 GROUP BY dir ORDER BY dir`, append([]any{start, repo.Name}, uargs...)...)
+		FROM (SELECT substr(path, ?) AS rest, size FROM assets WHERE `+held+under+`)
+		WHERE instr(rest, '/') > 0 GROUP BY dir ORDER BY dir`, append([]any{start}, uargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -379,8 +389,15 @@ func (a *App) browseAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	}
 	rows.Close()
 
-	files := `WHERE repo=?` + under + ` AND instr(substr(path, ?), '/')=0 AND substr(path, ?) LIKE ? ESCAPE '\'`
-	fargs := append(append([]any{repo.Name}, uargs...), start, start, "%"+likeEscape(filter)+"%")
+	files := `WHERE ` + held + under + ` AND instr(substr(path, ?), '/')=0 AND substr(path, ?) LIKE ? ESCAPE '\'`
+	fargs := append(append([]any{}, uargs...), start, start, "%"+likeEscape(filter)+"%")
+	if members := a.holders(repo); repo.Type == "group" && len(members) > 1 {
+		// a path held by several members is listed once, as the member that would serve it (the first)
+		order := "," + strings.Join(members, ",") + ","
+		files += ` AND NOT EXISTS (SELECT 1 FROM assets b WHERE b.path=a.path AND b.repo IN (` + placeholders(len(members)) + `)
+			AND instr(?, ',' || b.repo || ',') < instr(?, ',' || a.repo || ','))`
+		fargs = append(append(fargs, anySlice(members)...), order, order)
+	}
 	var nfiles int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM assets a `+files, fargs...).Scan(&nfiles); err != nil {
 		return nil, err
@@ -406,7 +423,12 @@ func (a *App) assetAPI(w http.ResponseWriter, r *http.Request, u *User) (any, er
 	if err != nil {
 		return nil, err
 	}
-	return a.findAsset(repo.Name, r.URL.Query().Get("path"))
+	for _, n := range a.holders(repo) {
+		if x, err := a.findAsset(n, r.URL.Query().Get("path")); err == nil {
+			return x, nil
+		}
+	}
+	return nil, errNotFound
 }
 
 type versionView struct {
@@ -444,8 +466,9 @@ func (a *App) componentsAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if order != "component" {
 		order += ", component"
 	}
-	where := `WHERE repo=? AND component!='' AND uploader!='system' AND component LIKE ? ESCAPE '\'`
-	args := []any{repo.Name, "%" + likeEscape(r.URL.Query().Get("q")) + "%"}
+	held, hargs := a.repoIs(repo)
+	where := `WHERE ` + held + ` AND component!='' AND uploader!='system' AND component LIKE ? ESCAPE '\'`
+	args := append(hargs, "%"+likeEscape(r.URL.Query().Get("q"))+"%")
 	var total int
 	if err := a.db.QueryRow(`SELECT COUNT(DISTINCT component) FROM assets `+where, args...).Scan(&total); err != nil {
 		return nil, err
@@ -471,8 +494,8 @@ func (a *App) componentsAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 		return out, nil
 	}
 	rows, err = a.db.Query(`SELECT component, version, COUNT(*), SUM(size), SUM(downloads), MAX(updated_at) FROM assets
-		WHERE repo=? AND uploader!='system' AND version!='' AND component IN (`+placeholders(len(names))+`)
-		GROUP BY component, version ORDER BY component, MAX(created_at) DESC`, append([]any{repo.Name}, names...)...)
+		WHERE `+held+` AND uploader!='system' AND version!='' AND component IN (`+placeholders(len(names))+`)
+		GROUP BY component, version ORDER BY component, MAX(created_at) DESC`, append(append([]any{}, hargs...), names...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -744,13 +767,36 @@ func (a *App) searchAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	if order == "" {
 		order = searchSort["updated"]
 	}
-	like := "%" + likeEscape(q.Get("q")) + "%"
+	text, ops := parseSearch(q.Get("q"))
+	like := "%" + likeEscape(text) + "%"
+	repoName, format := q.Get("repo"), q.Get("format")
+	if ops["repo"] != "" {
+		repoName = ops["repo"]
+	}
+	if ops["format"] != "" {
+		format = ops["format"]
+	}
 	in, inArgs := repoIn("a.repo", repos, all)
-	args := append([]any{like, q.Get("repo"), q.Get("format")}, inArgs...)
+	// a group stores nothing itself: searching it means searching its members
+	if g, err := a.getRepo(repoName); err == nil && g.Type == "group" {
+		repoName = ""
+		held := a.holders(g)
+		if len(held) == 0 {
+			in += " AND 0"
+		} else {
+			in += " AND a.repo IN (" + placeholders(len(held)) + ")"
+			inArgs = append(inArgs, anySlice(held)...)
+		}
+	}
+	for _, f := range searchFilters(ops) { // field operators: version:, uploader:, sha256:
+		in += f.sql
+		inArgs = append(inArgs, f.args...)
+	}
+	args := append([]any{like, repoName, format}, inArgs...)
 	// One repository: a small one is read through its own index and sorted; in a large one, walking
 	// the requested order and skipping other repositories fills a page sooner.
 	repoIs := ` AND (?2='' OR a.repo=?2)`
-	if stats, err := a.repoStats(); err == nil && q.Get("repo") != "" && stats[q.Get("repo")].AssetCount < 20000 {
+	if stats, err := a.repoStats(); err == nil && repoName != "" && stats[repoName].AssetCount < 20000 {
 		repoIs = ` AND a.repo=?2`
 	}
 	filters := repoIs + ` AND (?3='' OR r.format=?3) AND a.path NOT LIKE '%/blobs/sha256:%' AND a.uploader!='system'` + in
@@ -758,7 +804,7 @@ func (a *App) searchAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	where := `JOIN repositories r ON r.name=a.repo
 		WHERE (?1='%%' OR a.path LIKE ?1 ESCAPE '\' OR a.component LIKE ?1 ESCAPE '\')` + filters
 	count := "FROM assets a " + where
-	if a.searchIndex && indexedTerm(q.Get("q")) {
+	if a.searchIndex && indexedTerm(text) {
 		// With it: read matches straight from the substring index (CROSS JOIN pins it as the driving table).
 		count = `FROM assets_fts f CROSS JOIN assets a ON a.id=f.rowid JOIN repositories r ON r.name=a.repo WHERE f.text LIKE ?1` + filters
 		ids, err := a.assetIDs(`SELECT a.id `+count+` LIMIT ?`, append(args, sparseMatches+1)...)

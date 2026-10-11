@@ -73,6 +73,23 @@ export interface Asset {
 export interface BrowseEntry { name: string; path: string; folder: boolean; count?: number; size?: number; asset?: Asset }
 export interface VersionInfo { version: string; assets: number; size: number; downloads: number; updatedAt: number }
 export interface Component { name: string; versions: VersionInfo[]; assets: number; size: number; downloads: number; updatedAt: number }
+export interface PkgDep { name: string; version?: string; scope?: string; optional?: boolean }
+export interface PkgInfo { description?: string; url?: string; licenses?: string[]; scm?: string; developers?: string[]; readme?: string; dependencies: PkgDep[] }
+export interface FileSums { md5?: string; sha1?: string; sha256: string; sha512?: string; signed: boolean }
+export interface DayCount { day: string; n: number }
+export interface PackageView {
+  repo: string; format: Format; component: string; version: string; latest: string
+  versions: VersionInfo[]; files: { asset: Asset; sums: FileSums }[]; info: PkgInfo
+  dependents: number; downloadsDaily: DayCount[]; downloadsTotal: number
+}
+export interface Dependent { repo: string; component: string; version: string; depVersion: string; scope: string }
+export interface SavedSearch { id: number; name: string; query: string; createdAt: number }
+export interface StorageReport {
+  repos: { name: string; format: Format; type: RepoType; assets: number; bytes: number; downloads: number; quotaMb: number; growth: number }[]
+  series: { day: string; bytes: number; logical: number }[]
+  physical: number; logical: number; reclaimable?: number; orphans?: number
+}
+
 export interface Token { id: number; name: string; scope: TokenScope; createdAt: number; expiresAt: number; lastUsed: number }
 export interface Settings { anonymousAccess: boolean; baseUrl: string; banner: string; auditRetentionDays: number }
 export interface AuditEvent { id: number; ts: number; username: string; action: string; target: string; detail: string }

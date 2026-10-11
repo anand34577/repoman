@@ -202,6 +202,46 @@ Matches the text anywhere in the path or component name, across all repositories
 `repo` and `format` are optional filters. `sort` is `updated` (default, most recent first), `name`,
 `downloads` or `size`. Paged, default limit 500.
 
+`repo` may name a group: its members are searched. The text can carry operators, which are removed from the
+text before matching: `version:1.2`, `repo:name`, `format:maven`, `uploader:alice` and `sha256:<hex prefix>`
+(for example `lib version:1.2 repo:releases`). A token whose key is not an operator, such as `com.acme:lib`,
+is plain text.
+
+### Packages — `GET /repositories/{name}/package?component=<name>&version=<v>` · viewer
+
+One component of a repository (a group shows its members' packages). `version` defaults to the newest.
+Returns the version list, the files of the version with their checksums, the descriptive metadata and
+dependencies read from the package's own descriptor (Maven pom, hosted npm packument, `go.mod`, conda index),
+the number of packages that depend on it, and its downloads per day for 30 days:
+
+```json
+{"repo": "maven-releases", "component": "com.acme:lib", "version": "1.1.0", "latest": "1.1.0",
+ "versions": [ … ], "files": [{"asset": { … }, "sums": {"md5": "…", "sha1": "…", "sha256": "…", "sha512": "…", "signed": true}}],
+ "info": {"description": "…", "licenses": ["Apache-2.0"], "dependencies": [{"name": "org.slf4j:slf4j-api", "version": "2.0.9", "scope": "compile"}]},
+ "dependents": 3, "downloadsDaily": [{"day": "2026-10-11", "n": 4}, …], "downloadsTotal": 31}
+```
+
+`?brief=1` returns only the version list. `GET /repositories/{name}/dependents?component=<name>` lists the packages
+that declare a dependency on it (paged; only repositories the caller can read). `GET /repositories/{name}/checksums?path=<path>`
+returns the `sums` object of one file. `GET /assets/{id}/downloads` returns the last 30 days of one artifact's downloads.
+
+### Promote and bulk delete
+
+| Endpoint | |
+|---|---|
+| `POST /repositories/{name}/promote` | Body `{"target": "releases", "move": false, "items": [{"component": "com.acme:lib", "version": "1.1.0"}]}`. Copies (or with `move`, moves) the versions to another hosted repository of the same format that the caller can write to. An empty `version` means every version. Content is shared, not copied. Maven, raw, Go, apt and yum repositories; 409 and nothing copied if the target refuses to overwrite a file |
+| `POST /repositories/{name}/bulk-delete` | Body `{"ids": [1, 2], "prefixes": ["folder/path"], "components": [{"component": "…", "version": "…"}]}` → `{"deleted": 12}` |
+
+### Saved searches — `/saved-searches` · viewer
+
+`GET` lists the caller's saved searches, `POST {"name": "…", "query": "q=lib&repo=releases"}` saves one (up to 50),
+`DELETE /saved-searches/{id}` removes it. `query` is the search page's URL query string.
+
+### Storage — `GET /storage?days=90&scan=1` · admin
+
+Per-repository size, growth over the period from the daily samples, distinct bytes on disk against the sum of every copy,
+and with `scan=1` the bytes and files the blob store could free.
+
 ### The artifact object
 
 ```json
