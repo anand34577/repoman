@@ -5,6 +5,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Formats: Rust / Cargo (sparse registry), Dart / Flutter (pub), Hugging Face, Git LFS and Alpine (apk).
+
+### Fixed
+
+- The dashboard counted a group's artifacts and bytes on top of its members', so a group of a 100 MB proxy and a
+  50 MB hosted repository added 150 MB again. Groups are now left out of the totals and the per-format sizes.
+
 ## [1.6.0]
 
 Groups show what their members hold, packages get a page of their own, and Linux and macOS get a one-line installer

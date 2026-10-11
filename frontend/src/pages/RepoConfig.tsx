@@ -117,7 +117,7 @@ function RemoteSection({ repo: r, set }: { repo: Repo; set: (p: Partial<Repo>) =
       )}
       <Group align="flex-end" wrap="nowrap">
         <TextInput flex={1} label="Remote URL" required placeholder="https://" value={r.remoteUrl ?? ''}
-          description={r.format === 'yum' ? 'A baseurl containing repodata/ (mirrorlists and metalinks are not supported).' : r.format === 'apt' ? 'The archive root containing dists/ and pool/.' : r.format === 'conda' ? 'The channel URL that contains noarch/, e.g. https://conda.anaconda.org/conda-forge' : undefined}
+          description={r.format === 'yum' ? 'A baseurl containing repodata/ (mirrorlists and metalinks are not supported).' : r.format === 'apt' ? 'The archive root containing dists/ and pool/.' : r.format === 'conda' ? 'The channel URL that contains noarch/, e.g. https://conda.anaconda.org/conda-forge' : r.format === 'cargo' ? 'The sparse index URL that serves config.json, e.g. https://index.crates.io' : r.format === 'pub' ? 'A pub server root, e.g. https://pub.dev' : r.format === 'huggingface' ? 'e.g. https://huggingface.co (public repositories only).' : r.format === 'alpine' ? 'The mirror root that contains the v3.x folders, e.g. https://dl-cdn.alpinelinux.org/alpine' : undefined}
           onChange={(e) => { set({ remoteUrl: e.currentTarget.value }); setTest(undefined) }} />
         <Button variant="default" leftSection={<IconPlugConnected size={16} />} onClick={runTest} loading={testing} disabled={!r.remoteUrl}>Test connection</Button>
       </Group>

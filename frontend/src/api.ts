@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type Role = 'viewer' | 'developer' | 'admin'
-export type Format = 'maven' | 'npm' | 'pypi' | 'docker' | 'go' | 'apt' | 'yum' | 'conda' | 'raw'
+export type Format = 'maven' | 'npm' | 'pypi' | 'docker' | 'go' | 'apt' | 'yum' | 'conda' | 'cargo' | 'pub' | 'huggingface' | 'lfs' | 'alpine' | 'raw'
 export type RepoType = 'hosted' | 'proxy' | 'group'
 export type Access = 'none' | 'read' | 'write'
 export type TokenScope = 'read' | 'write' | 'full'

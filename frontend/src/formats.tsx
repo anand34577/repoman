@@ -1,5 +1,5 @@
 import {
-  IconBrandDebian, IconBrandDocker, IconBrandGolang, IconBrandNpm, IconBrandPython, IconBrandRedhat, IconCoffee, IconFiles, IconFlask,
+  IconBrain, IconBrandDebian, IconBrandDocker, IconBrandFlutter, IconBrandGit, IconBrandGolang, IconBrandNpm, IconBrandPython, IconBrandRedhat, IconBrandRust, IconCoffee, IconFiles, IconFlask, IconMountain,
 } from '@tabler/icons-react'
 import type { Format, RepoType } from './api'
 
@@ -131,6 +131,54 @@ export const FORMATS: FormatInfo[] = [
     upload: { accept: ['.conda', '.bz2'], hint: 'Drop .conda or .tar.bz2 packages. The file name, platform folder (noarch, linux-64…) and channel index come from the package itself.' },
     hostedHelp: 'Publish your own conda packages; repodata.json is generated automatically.',
     proxyHelp: 'Cache a conda channel such as conda-forge. Only packages you install are downloaded.',
+  },
+  {
+    id: 'cargo', label: 'Rust / Cargo', icon: IconBrandRust, color: 'orange',
+    tagline: 'Rust crates (sparse registry)', clients: 'cargo',
+    types: ['hosted', 'proxy', 'group'],
+    presets: [{ label: 'crates.io', url: 'https://index.crates.io' }],
+    hostedHelp: 'Publish private crates with cargo publish. The index is generated for you.',
+    proxyHelp: 'Cache crates.io so CI builds are fast and keep working when it is down.',
+    groupHelp: 'One registry for your crates and crates.io, merged per crate.',
+  },
+  {
+    id: 'pub', label: 'Dart / Flutter (pub)', icon: IconBrandFlutter, color: 'blue',
+    tagline: 'Dart and Flutter packages', clients: 'dart pub, flutter pub',
+    types: ['hosted', 'proxy', 'group'],
+    presets: [{ label: 'pub.dev', url: 'https://pub.dev' }],
+    hostedHelp: 'Publish private packages with dart pub publish.',
+    proxyHelp: 'Cache pub.dev; archives are downloaded once and served locally afterwards.',
+    groupHelp: 'One hosted URL for private and public packages.',
+  },
+  {
+    id: 'huggingface', label: 'Hugging Face', icon: IconBrain, color: 'yellow',
+    tagline: 'Models, datasets and spaces', clients: 'huggingface_hub, transformers, huggingface-cli',
+    types: ['hosted', 'proxy', 'group'],
+    presets: [{ label: 'huggingface.co', url: 'https://huggingface.co' }],
+    upload: { hint: 'Upload model files into <org>/<model>/resolve/main. Use datasets/<org>/<name>/resolve/main for datasets.', dir: { label: 'Directory', placeholder: 'acme/my-model/resolve/main', description: 'Model id, then /resolve/main' } },
+    hostedHelp: 'Serve your own models and datasets to huggingface_hub (set HF_ENDPOINT). Files are uploaded with curl or the Browse tab.',
+    proxyHelp: 'Cache public models and datasets so large downloads happen once. Public repositories only.',
+    groupHelp: 'Look up models in your hosted repository first, then in the cache.',
+  },
+  {
+    id: 'lfs', label: 'Git LFS', icon: IconBrandGit, color: 'red',
+    tagline: 'Large file storage for git', clients: 'git lfs',
+    types: ['hosted'],
+    presets: [],
+    hostedHelp: 'Store large files outside your git server. Identical files are stored once.',
+    proxyHelp: '',
+  },
+  {
+    id: 'alpine', label: 'Alpine', icon: IconMountain, color: 'indigo',
+    tagline: 'Alpine Linux packages (.apk)', clients: 'apk',
+    types: ['hosted', 'proxy'],
+    presets: [
+      { label: 'Alpine (dl-cdn)', url: 'https://dl-cdn.alpinelinux.org/alpine' },
+      { label: 'Alpine (kernel.org mirror)', url: 'https://mirrors.edge.kernel.org/alpine' },
+    ],
+    upload: { accept: ['.apk'], hint: 'Drop .apk packages into a folder such as v3.20/main/x86_64. APKINDEX.tar.gz is generated for that folder.', dir: { label: 'Directory', placeholder: 'v3.20/main/x86_64' } },
+    hostedHelp: 'Distribute your own .apk packages. The index is generated (unsigned, so clients use --allow-untrusted).',
+    proxyHelp: 'Mirror an Alpine mirror on demand. Only packages you install are downloaded.',
   },
   {
     id: 'raw', label: 'Raw', icon: IconFiles, color: 'gray',

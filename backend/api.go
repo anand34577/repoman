@@ -201,6 +201,9 @@ func (a *App) validateRepo(r *Repo) error {
 	if !slices.Contains(formats, r.Format) {
 		return httpErr{400, "unsupported format " + r.Format}
 	}
+	if r.Format == "lfs" && r.Type != "hosted" {
+		return httpErr{400, "Git LFS repositories can only be hosted"}
+	}
 	switch r.Type {
 	case "hosted":
 		r.RemoteURL, r.RemoteUsername, r.RemotePassword, r.Members = "", "", "", nil
@@ -219,7 +222,7 @@ func (a *App) validateRepo(r *Repo) error {
 		}
 		r.Members, r.QuotaMB = nil, 0
 	case "group":
-		if r.Format == "apt" || r.Format == "yum" {
+		if r.Format == "apt" || r.Format == "yum" || r.Format == "alpine" {
 			return httpErr{400, r.Format + " repositories can't be grouped: their signed indexes can't be merged. Configure clients with several sources instead."}
 		}
 		if r.Format == "conda" {
@@ -540,7 +543,7 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	if err != nil {
 		return nil, err
 	}
-	if repo.Type != "hosted" || !slices.Contains([]string{"raw", "maven", "apt", "yum", "go", "conda"}, repo.Format) {
+	if repo.Type != "hosted" || !slices.Contains([]string{"raw", "maven", "apt", "yum", "go", "conda", "alpine", "huggingface"}, repo.Format) {
 		return nil, httpErr{400, "browser upload isn't available for " + repo.Format + " " + repo.Type + " repositories; use the native client shown under Setup"}
 	}
 	if err := a.checkWritable(repo); err != nil {
@@ -582,8 +585,17 @@ func (a *App) uploadAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 			x, err = a.storeRPM(repo, f, target, u)
 		case "conda":
 			x, err = a.ingestConda(repo, f, "", u) // subdir and file name come from the package itself
+		case "alpine":
+			x, err = a.alpineStore(repo, path.Join(dir, name), f, u)
 		default:
 			p := path.Join(dir, name)
+			if repo.Format == "huggingface" {
+				var ok bool
+				if p, ok = hfMain(p); !ok {
+					err = httpErr{400, "Hugging Face files go in the directory <org>/<model>/resolve/main"}
+					break
+				}
+			}
 			if !validPath(p) {
 				err = httpErr{400, "invalid path: " + p}
 				break

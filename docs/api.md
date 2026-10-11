@@ -101,7 +101,7 @@ Returns the repositories the caller can read.
 
 | Field | Notes |
 |---|---|
-| `format` | `maven`, `npm`, `pypi`, `docker`, `go`, `apt`, `yum`, `conda`, `raw` |
+| `format` | `maven`, `npm`, `pypi`, `docker`, `go`, `apt`, `yum`, `conda`, `cargo`, `pub`, `huggingface`, `lfs`, `alpine`, `raw` |
 | `type` | `hosted`, `proxy`, `group` |
 | `status` | `online`, `offline` (switched off by an admin), `degraded` (proxy upstream failing; cache still served) |
 | `health` | Proxies only, once they have contacted the upstream |
@@ -280,7 +280,7 @@ or `full` scope.
 
 ### Multipart upload — `POST /repositories/{name}/upload` · write access
 
-What the UI's drag-and-drop uses. Hosted `raw`, `maven`, `go`, `apt`, `yum` and `conda` repositories only.
+What the UI's drag-and-drop uses. Hosted `raw`, `maven`, `go`, `apt`, `yum`, `conda`, `alpine` and `huggingface` repositories only.
 Form fields: `file` (repeatable) and `path` (target directory; ignored for APT and Conda).
 
 ```bash

@@ -219,7 +219,7 @@ var errNotFound = errors.New("not found")
 
 // ---------- repositories ----------
 
-var formats = []string{"maven", "npm", "pypi", "docker", "go", "apt", "yum", "conda", "raw"}
+var formats = []string{"maven", "npm", "pypi", "docker", "go", "apt", "yum", "conda", "cargo", "pub", "huggingface", "lfs", "alpine", "raw"}
 
 type Repo struct {
 	Name           string   `json:"name"`

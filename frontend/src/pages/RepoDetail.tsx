@@ -574,7 +574,7 @@ function Components({ repo, canWrite, onChanged }: { repo: Repo; canWrite: boole
         {using && <UsageTabs repo={repo} component={using.name} version={using.version} />}
       </Modal>
       {!loading && data?.length === 0 && !total && <EmptyState icon={<IconPackage />} title={q ? 'No matching components' : 'No components yet'}>
-        {repo.format === 'raw' ? 'Raw repositories store plain files — use the Browse tab.' : 'Components appear once packages are published or cached.'}
+        {['raw', 'lfs', 'huggingface'].includes(repo.format) ? 'This repository stores plain files — use the Browse tab.' : 'Components appear once packages are published or cached.'}
       </EmptyState>}
     </Card>
   )

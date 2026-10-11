@@ -87,6 +87,9 @@ func (a *App) authenticate(r *http.Request) *User {
 	if tok, ok := strings.CutPrefix(h, "Bearer "); ok {
 		return a.userByToken(tok)
 	}
+	if strings.HasPrefix(h, "rm_") { // cargo sends the bare token as the Authorization header
+		return a.userByToken(h)
+	}
 	if name, pass, ok := r.BasicAuth(); ok {
 		if strings.HasPrefix(pass, "rm_") {
 			return a.userByToken(pass)
