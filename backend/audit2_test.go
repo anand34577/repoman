@@ -167,7 +167,7 @@ func TestSlowStat(t *testing.T) {
 	if get("a", 2, 0) != 2 {
 		t.Fatal("a cheap aggregate must be recomputed as soon as the data changes")
 	}
-	if get("b", 2, 30*time.Millisecond) != 3 {
+	if get("b", 2, 2*slowStatCost) != 3 {
 		t.Fatal("another key must not share the cached value")
 	}
 	if get("b", 3, 0) != 3 {
