@@ -5,6 +5,55 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0]
+
+Groups show what their members hold, packages get a page of their own, and Linux and macOS get a one-line installer
+with safe upgrades, rollback and migration.
+
+### Upgrade notes
+
+- The first start adds a few small tables and indexes dependency metadata in the background (the "Index package
+  dependencies" task); the Dependents lists fill in as it finishes. Nothing needs to be done by hand.
+- On Linux and macOS the installer now backs up the database before an upgrade and refuses to downgrade; see
+  *Rolling back* in docs/installation.md.
+
+### Fixed
+
+- **A group repository showed nothing.** Browsing a group, its Components tab, its artifact count and size, and
+  searching with the group selected all looked only for artifacts stored in the group itself, and a group stores
+  none. They now show what its member repositories hold.
+- Signing in no longer drops the query string of the page you were opening, so a link to a package page or a
+  filtered search survives the sign-in screen.
+- The *Delete* buttons no longer appear on a group's components, where they could not delete anything.
+
+### Added
+
+- **One-line install for Linux and macOS**: `curl -fsSL https://raw.githubusercontent.com/anand34577/repoman/main/scripts/get.sh | sudo sh`
+  picks the right build for the machine, verifies its checksum and installs the service; running it again
+  upgrades. `check`, `rollback`, `uninstall [--purge]`, `migrate-from`, `--version` and `--no-service` are
+  built in, and `RM_BASE_URL` points it at a mirror for air-gapped sites.
+- **Safer upgrades** (Linux and macOS installers): the database is backed up before a version change, the
+  previous program is kept, downgrades are refused, and `--rollback` restores both.
+- **Migration**: `--migrate-from <directory | host:/path>` adopts a data directory from a hand-run copy, a
+  Docker volume, a backup or another server (over ssh), keeping whatever was there aside.
+- **Usage instructions** for every package, like Maven Central's: Maven, Gradle, sbt and Ivy snippets (with
+  `<classifier>` and `<type>` taken from the file you are looking at), npm/Yarn/pnpm, pip/Poetry/uv, Docker,
+  Go, conda, apt and dnf. They can use the newest version instead of the one shown, and fill in your API token.
+- **Package page** per component: description, licence and links read from the pom / packument / go.mod, usage
+  tabs, every file with MD5, SHA-1, SHA-256, SHA-512 and signature state plus a copyable verify command, all
+  versions, dependencies, the packages that **depend on it**, and a 30-day downloads chart.
+  Artifact details also show checksums and downloads per day.
+- **Groups**: *Browse* names the member that serves each file and lists a path held by several members once;
+  *Setup* shows the order members are searched in.
+- **Search** understands `version:`, `repo:`, `format:`, `uploader:` and `sha256:`, can be limited to a group,
+  and keeps **saved searches** per user. The command palette (Ctrl/Cmd+K) now also finds packages.
+- **Promote** versions from one hosted repository to another (staging → releases) as a copy or a move; Maven
+  version metadata is regenerated in the target.
+- **Bulk actions**: tick files, folders or packages in *Browse* and *Components* to delete or promote them together.
+- **Storage** page: size per repository, growth over time from a daily sample, space saved by sharing identical
+  files, and a scan for unused content files. New scheduled tasks record usage daily and index package dependencies.
+- End-to-end browser tests (`npm --prefix frontend run e2e`), run in CI.
+
 ## [1.5.1]
 
 An audit of the server and the web UI: faster on large installations, several fixes, and a smoother interface.
