@@ -5,6 +5,35 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1]
+
+Fixes from a code review: Maven metadata after deletes, faster large deletes, and safer package uploads.
+
+### Fixed
+
+- Deleting Maven versions (cleanup policies, bulk delete, deleting a component or version, promotion with "move")
+  left `maven-metadata.xml` listing them, so builds resolving `LATEST`, `RELEASE` or version ranges got 404s. The
+  metadata is now rewritten, and removed with the last version.
+- Large deletes and cleanups no longer make proxy requests and the repository list wait until they finish, and they
+  commit in one transaction instead of one disk write per artifact. Content files are removed only after the delete
+  is committed.
+- A crafted Alpine package could make the server decompress it entirely into memory; packages are now read as a
+  stream.
+- Debian and RPM packages whose name, version or architecture contain `/` or other characters outside their format's
+  rules are refused instead of being stored under stray paths that the generated indexes then pointed to.
+- Importing a configuration with a group whose members are other groups failed unless the file happened to list
+  them in the right order.
+- After a proxy's remote URL changes, or a repository is deleted and recreated under the same name, cached
+  "not found" answers and the upstream health of the old remote are forgotten.
+- Cargo and npm publishes with a version or name that is not a clean path are refused; Docker cross-repository
+  mounts check the digest format.
+- Audit CSV exports also neutralise cells that start with a tab or carriage return (spreadsheet formula injection).
+
+### Security
+
+- Built with Go 1.26.10, which no longer trusts compromised intermediate certificates (GO-2026-6809). This
+  affects HTTPS connections to upstreams, SSO providers, webhooks and notification servers.
+
 ## [1.7.0]
 
 Five more formats, and a dashboard that is easier to read and no longer counts groups twice.

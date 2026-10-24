@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,11 @@ func (a *App) storeDeb(repo *Repo, body io.Reader, u *User) (*Asset, error) {
 	if _, v, ok := strings.Cut(ver, ":"); ok { // filenames drop the epoch
 		ver = v
 	}
+	// these name files and index folders (dists/…/binary-<arch>/): Debian policy's character sets only
+	if !debNameRe.MatchString(info.Package) || !debArchRe.MatchString(info.Architecture) || !debVersionRe.MatchString(info.Version) {
+		a.blobs.Discard(tmp)
+		return nil, httpErr{400, fmt.Sprintf("not a valid .deb package: invalid Package, Version or Architecture (%q %q %q)", info.Package, info.Version, info.Architecture)}
+	}
 	p := path.Join("pool/main", poolPrefix(info.Package), info.Package, fmt.Sprintf("%s_%s_%s.deb", info.Package, ver, info.Architecture))
 	if err := a.checkRedeploy(repo, p); err != nil {
 		a.blobs.Discard(tmp)
@@ -113,6 +119,12 @@ func (a *App) storeDeb(repo *Repo, body io.Reader, u *User) (*Asset, error) {
 	a.audit(u, "apt.upload", repo.Name+"/"+p)
 	return x, nil
 }
+
+var (
+	debNameRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
+	debArchRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	debVersionRe = regexp.MustCompile(`^[A-Za-z0-9.+~:-]+$`)
+)
 
 func poolPrefix(pkg string) string {
 	if strings.HasPrefix(pkg, "lib") && len(pkg) > 3 {

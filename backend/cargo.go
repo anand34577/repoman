@@ -185,6 +185,10 @@ func (a *App) cargoPublish(w http.ResponseWriter, r *http.Request, repo *Repo, u
 		return
 	}
 	p := fmt.Sprintf("api/v1/crates/%s/%s/download", strings.ToLower(m.Name), m.Vers)
+	if !validPath(p) || !cargoDownloadRe.MatchString(p) {
+		bad("invalid crate version " + m.Vers)
+		return
+	}
 	if err := a.checkRedeploy(repo, p); err != nil {
 		bad(err.Error())
 		return

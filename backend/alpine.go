@@ -104,20 +104,23 @@ func apkEntry(data []byte, size int64) (entry, name, ver string, err error) {
 			return "", "", "", errors.New("not gzip data")
 		}
 		gz.Multistream(false)
-		seg, err := io.ReadAll(gz)
-		if err != nil {
-			return "", "", "", err
-		}
-		tr := tar.NewReader(bytes.NewReader(seg))
+		// streamed, never held in memory whole: a small crafted package can inflate to gigabytes
+		var info []byte
+		tr := tar.NewReader(gz)
 		for {
 			h, err := tr.Next()
 			if err != nil {
 				break
 			}
-			if h.Name != ".PKGINFO" {
-				continue
+			if h.Name == ".PKGINFO" {
+				info, _ = io.ReadAll(io.LimitReader(tr, 1<<20))
+				break
 			}
-			info, _ := io.ReadAll(io.LimitReader(tr, 1<<20))
+		}
+		if _, err := io.Copy(io.Discard, gz); err != nil { // to the end of this stream, where the next begins
+			return "", "", "", err
+		}
+		if info != nil {
 			sum := sha1.Sum(data[start : len(data)-rd.Len()])
 			return apkRecord(string(info), "Q1"+base64.StdEncoding.EncodeToString(sum[:]), size)
 		}

@@ -831,14 +831,7 @@ func (a *App) promoteAPI(w http.ResponseWriter, r *http.Request, u *User) (any, 
 	if err := a.reindex(dst.Name); err != nil {
 		return nil, err
 	}
-	if req.Move {
-		defer func() {
-			if src.Format == "maven" {
-				for c := range comps {
-					a.mavenRewriteMetadata(src, c)
-				}
-			}
-		}()
+	if req.Move { // removeAssets also rewrites the source's maven-metadata.xml
 		for i := 0; i < len(todo); i += 500 {
 			ids := []any{}
 			for _, x := range todo[i:min(i+500, len(todo))] {
@@ -875,8 +868,10 @@ func (a *App) mavenRewriteMetadata(repo *Repo, comp string) error {
 		versions = append(versions, v)
 	}
 	rows.Close()
-	if len(versions) == 0 {
-		return nil
+	p := strings.ReplaceAll(g, ".", "/") + "/" + art + "/maven-metadata.xml"
+	if len(versions) == 0 { // every version is gone: metadata listing them would send clients to 404s
+		_, err := a.deleteAssets(`repo=? AND path IN (?,?,?)`, repo.Name, p, p+".md5", p+".sha1")
+		return err
 	}
 	release := ""
 	for _, v := range versions {
@@ -892,7 +887,6 @@ func (a *App) mavenRewriteMetadata(repo *Repo, comp string) error {
 		return err
 	}
 	body = append([]byte(xml.Header), body...)
-	p := strings.ReplaceAll(g, ".", "/") + "/" + art + "/maven-metadata.xml"
 	meta := assetMeta{ContentType: "application/xml", Uploader: "system"}
 	if _, err := a.putAsset(repo.Name, p, strings.NewReader(string(body)), meta); err != nil {
 		return err

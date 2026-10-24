@@ -149,36 +149,24 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 		return nil, err
 	}
 	report := map[string][]string{"created": {}, "updated": {}, "errors": {}, "usersNeedingPassword": {}}
-	sort.SliceStable(doc.Repositories, func(i, j int) bool { // groups after their members
-		return doc.Repositories[i].Type != "group" && doc.Repositories[j].Type == "group"
-	})
-	for _, rp := range doc.Repositories {
-		if rp == nil {
-			continue
-		}
-		old, err := a.getRepo(rp.Name)
-		if err == nil {
-			rp.Format, rp.Type, rp.CreatedAt, rp.InvalidatedAt = old.Format, old.Type, old.CreatedAt, old.InvalidatedAt
-			if rp.RemotePassword == "" {
-				rp.RemotePassword = old.RemotePassword
+	// groups after their members; a group whose members are groups may need several passes
+	pending := slices.DeleteFunc(slices.Clone(doc.Repositories), func(rp *Repo) bool { return rp == nil })
+	sort.SliceStable(pending, func(i, j int) bool { return pending[i].Type != "group" && pending[j].Type == "group" })
+	for len(pending) > 0 {
+		var failed []*Repo
+		errs := map[*Repo]error{}
+		for _, rp := range pending {
+			if err := a.importRepo(rp, report); err != nil {
+				failed, errs[rp] = append(failed, rp), err
 			}
-		} else {
-			rp.CreatedAt, rp.InvalidatedAt = time.Now().Unix(), 0
 		}
-		if err := a.validateRepo(rp); err != nil {
-			report["errors"] = append(report["errors"], rp.Name+": "+err.Error())
-			continue
+		if len(failed) == len(pending) { // no progress: these will not resolve
+			for _, rp := range failed {
+				report["errors"] = append(report["errors"], rp.Name+": "+errs[rp].Error())
+			}
+			break
 		}
-		if err := a.saveRepo(rp); err != nil {
-			report["errors"] = append(report["errors"], rp.Name+": "+err.Error())
-			continue
-		}
-		a.reindex(rp.Name)
-		if old != nil {
-			report["updated"] = append(report["updated"], "repository "+rp.Name)
-		} else {
-			report["created"] = append(report["created"], "repository "+rp.Name)
-		}
+		pending = failed
 	}
 	for _, x := range doc.Users {
 		if x == nil {
@@ -252,4 +240,30 @@ func (a *App) importAPI(w http.ResponseWriter, r *http.Request, u *User) (any, e
 	}
 	a.audit(u, "config.import", "system", len(report["created"]), "created", len(report["updated"]), "updated")
 	return report, nil
+}
+
+// importRepo creates or updates one repository from an exported configuration.
+func (a *App) importRepo(rp *Repo, report map[string][]string) error {
+	old, err := a.getRepo(rp.Name)
+	if err == nil {
+		rp.Format, rp.Type, rp.CreatedAt, rp.InvalidatedAt = old.Format, old.Type, old.CreatedAt, old.InvalidatedAt
+		if rp.RemotePassword == "" {
+			rp.RemotePassword = old.RemotePassword
+		}
+	} else {
+		rp.CreatedAt, rp.InvalidatedAt = time.Now().Unix(), 0
+	}
+	if err := a.validateRepo(rp); err != nil {
+		return err
+	}
+	if err := a.saveRepo(rp); err != nil {
+		return err
+	}
+	a.reindex(rp.Name)
+	if old != nil {
+		report["updated"] = append(report["updated"], "repository "+rp.Name)
+	} else {
+		report["created"] = append(report["created"], "repository "+rp.Name)
+	}
+	return nil
 }

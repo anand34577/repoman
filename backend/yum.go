@@ -113,6 +113,11 @@ func (a *App) storeRPM(repo *Repo, body io.Reader, target string, u *User) (*Ass
 	if target == "" {
 		target = fmt.Sprintf("Packages/%s/%s-%s-%s.%s.rpm", strings.ToLower(pkg.Name[:1]), pkg.Name, pkg.Version, pkg.Release, pkg.Arch)
 	}
+	// name, version, release and arch come from the package: none may add folders or step out of one
+	if !validPath(target) || strings.ContainsAny(pkg.Name+pkg.Version+pkg.Release+pkg.Arch, "/\\") {
+		a.blobs.Discard(tmp)
+		return nil, httpErr{400, "not a valid .rpm package: its name, version, release or arch contains a path separator"}
+	}
 	if err := a.checkRedeploy(repo, target); err != nil {
 		a.blobs.Discard(tmp)
 		return nil, err
