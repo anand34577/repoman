@@ -491,29 +491,58 @@ func (a *App) deleteAssets(where string, args ...any) ([]*Asset, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	list, err := a.queryAssets("WHERE "+where, args...)
+	if err != nil || len(list) == 0 {
+		return list, err
+	}
+	// one transaction: thousands of rows commit at once instead of one disk sync each
+	tx, err := a.db.Begin()
 	if err != nil {
 		return nil, err
 	}
-	a.assetGen.Add(1)
+	defer tx.Rollback()
 	for _, x := range list {
-		if _, err := a.db.Exec(`DELETE FROM assets WHERE id=?`, x.ID); err != nil {
+		if _, err := tx.Exec(`DELETE FROM assets WHERE id=?`, x.ID); err != nil {
 			return nil, err
 		}
-		a.gcLocked(x.Blob)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	a.assetGen.Add(1)
+	// content goes only once the rows are gone for good: a rolled-back delete must not lose files
+	gone := map[string]bool{}
+	for _, x := range list {
+		if !gone[x.Blob] {
+			gone[x.Blob] = true
+			a.gcLocked(x.Blob)
+		}
 	}
 	return list, nil
 }
 
-// removeAssets deletes assets, then rebuilds metadata (apt/yum indexes, npm packuments) of affected hosted repos.
+// removeAssets deletes assets, then rebuilds metadata (apt/yum indexes, npm packuments, Maven
+// maven-metadata.xml) of affected hosted repos.
 func (a *App) removeAssets(where string, args ...any) ([]*Asset, error) {
 	list, err := a.deleteAssets(where, args...)
-	repos := map[string]bool{}
+	comps := map[string]map[string]bool{} // repo -> components that lost a version
 	for _, x := range list {
-		repos[x.Repo] = true
+		if comps[x.Repo] == nil {
+			comps[x.Repo] = map[string]bool{}
+		}
+		if x.Version != "" && x.Uploader != "system" {
+			comps[x.Repo][x.Component] = true
+		}
 	}
-	for name := range repos {
+	for name, cs := range comps {
 		if err := a.reindex(name); err != nil {
 			return list, err
+		}
+		if repo, rerr := a.getRepo(name); rerr == nil && repo.Format == "maven" && repo.Type == "hosted" {
+			for c := range cs {
+				if err := a.mavenRewriteMetadata(repo, c); err != nil {
+					return list, err
+				}
+			}
 		}
 	}
 	return list, err

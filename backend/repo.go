@@ -135,8 +135,8 @@ func (a *App) upstreamBackoff(repo string) time.Duration {
 		return 0
 	}
 	h := v.(*proxyHealth)
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
 	if !h.Down {
 		return 0
 	}
@@ -156,14 +156,14 @@ type proxyHealth struct {
 func (a *App) recordHealth(repo string, err error) {
 	v, _ := a.health.LoadOrStore(repo, &proxyHealth{})
 	h := v.(*proxyHealth)
-	a.mu.Lock() // tiny critical section; reuses the app lock to avoid another mutex
+	a.healthMu.Lock()
 	was := h.Down
 	if err != nil {
 		h.LastError, h.LastErrorAt, h.Down, h.downSince = err.Error(), time.Now().Unix(), true, time.Now()
 	} else {
 		h.LastOK, h.Down = time.Now().Unix(), false
 	}
-	a.mu.Unlock()
+	a.healthMu.Unlock()
 	switch {
 	case err != nil && !was:
 		a.audit(nil, "repository.degraded", repo, "upstream request failed; cached content is still served:", err.Error())
@@ -178,9 +178,9 @@ func (a *App) status(r *Repo) (string, *proxyHealth) {
 		return "offline", nil
 	}
 	if v, ok := a.health.Load(r.Name); ok {
-		a.mu.Lock()
+		a.healthMu.Lock()
 		h := *v.(*proxyHealth)
-		a.mu.Unlock()
+		a.healthMu.Unlock()
 		if h.Down {
 			return "degraded", &h
 		}

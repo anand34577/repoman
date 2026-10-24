@@ -179,7 +179,7 @@ func (a *App) dockerUpload(w http.ResponseWriter, r *http.Request, repo *Repo, n
 
 	switch {
 	case r.Method == http.MethodPost && id == "":
-		if mount := q.Get("mount"); strings.HasPrefix(mount, "sha256:") {
+		if mount := q.Get("mount"); reDigest.MatchString(mount) {
 			if _, err := a.dockerLinkBlob(repo, image+"/blobs/"+mount); err == nil {
 				w.Header().Set("Location", "/v2/"+name+"/blobs/"+mount)
 				w.Header().Set("Docker-Content-Digest", mount)

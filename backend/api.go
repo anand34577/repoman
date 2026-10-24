@@ -295,6 +295,10 @@ func (a *App) updateRepoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if repo.Distribution != old.Distribution {
 		a.reindex(repo.Name)
 	}
+	if repo.RemoteURL != old.RemoteURL { // what the old upstream lacked or how it failed says nothing about the new one
+		a.forgetNotFound(repo.Name)
+		a.health.Delete(repo.Name)
+	}
 	a.audit(u, "repository.update", repo.Name)
 	return redact(&repo), nil
 }
@@ -319,6 +323,8 @@ func (a *App) deleteRepoAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 		}
 	}
 	a.health.Delete(repo.Name)
+	a.forgetNotFound(repo.Name) // a new repository of the same name starts with a clean slate
+	a.quotaWarned.Delete(repo.Name)
 	a.audit(u, "repository.delete", repo.Name, len(list), "assets")
 	return nil, nil
 }
@@ -343,6 +349,16 @@ func (a *App) testRemoteAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 		}
 	}
 	return res, nil
+}
+
+// forgetNotFound drops a proxy's cached "not found" answers.
+func (a *App) forgetNotFound(repo string) {
+	a.negCache.Range(func(k, _ any) bool {
+		if strings.HasPrefix(k.(string), repo+"\x00") {
+			a.negCache.Delete(k)
+		}
+		return true
+	})
 }
 
 type errString string
@@ -672,16 +688,11 @@ func (a *App) invalidateAPI(w http.ResponseWriter, r *http.Request, u *User) (an
 	if err := a.saveRepo(repo); err != nil {
 		return nil, err
 	}
-	a.negCache.Range(func(k, _ any) bool {
-		if strings.HasPrefix(k.(string), repo.Name+"\x00") {
-			a.negCache.Delete(k)
-		}
-		return true
-	})
+	a.forgetNotFound(repo.Name)
 	if v, ok := a.health.Load(repo.Name); ok { // and try the upstream again right away
-		a.mu.Lock()
+		a.healthMu.Lock()
 		v.(*proxyHealth).downSince = time.Time{}
-		a.mu.Unlock()
+		a.healthMu.Unlock()
 	}
 	a.audit(u, "cache.invalidate", repo.Name)
 	return nil, nil
@@ -1251,7 +1262,7 @@ func (a *App) auditExportAPI(w http.ResponseWriter, r *http.Request, u *User) (a
 
 // csvSafe stops spreadsheet apps from evaluating a cell as a formula.
 func csvSafe(s string) string {
-	if s != "" && strings.ContainsRune("=+-@", rune(s[0])) {
+	if s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0])) { // tab and CR start formulas in some apps too
 		return "'" + s
 	}
 	return s

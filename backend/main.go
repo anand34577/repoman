@@ -59,6 +59,7 @@ type App struct {
 	fetches  singleflight.Group // collapses concurrent proxy misses for the same path
 	negCache sync.Map           // repo\x00path -> time.Time expiry for upstream 404s
 	health   sync.Map           // repo -> *proxyHealth
+	healthMu sync.Mutex         // guards the *proxyHealth values; never held across I/O
 
 	keyMu      sync.Mutex
 	signingKey *openpgp.Entity

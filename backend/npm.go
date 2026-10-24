@@ -78,6 +78,10 @@ func (a *App) npmPublish(w http.ResponseWriter, r *http.Request, repo *Repo, nam
 			Data string `json:"data"`
 		} `json:"_attachments"`
 	}
+	if !validPath(name) || strings.HasPrefix(name, "-") {
+		writeJSON(w, 400, errBody("invalid package name"))
+		return
+	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<30)).Decode(&body); err != nil || body.Name != name {
 		writeJSON(w, 400, errBody("invalid publish request"))
 		return
