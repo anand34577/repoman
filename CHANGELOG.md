@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1]
+
+Fixes from a code review: Maven metadata after deletes, faster large deletes, and safer package uploads.
+
 ### Fixed
 
 - Deleting Maven versions (cleanup policies, bulk delete, deleting a component or version, promotion with "move")
@@ -24,6 +28,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Cargo and npm publishes with a version or name that is not a clean path are refused; Docker cross-repository
   mounts check the digest format.
 - Audit CSV exports also neutralise cells that start with a tab or carriage return (spreadsheet formula injection).
+
+### Security
+
+- Built with Go 1.26.10, which no longer trusts compromised intermediate certificates (GO-2026-6809). This
+  affects HTTPS connections to upstreams, SSO providers, webhooks and notification servers.
 
 ## [1.7.0]
 
