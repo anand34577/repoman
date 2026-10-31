@@ -5,6 +5,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0]
+
+PyPI proxies can mirror sub-indexes and flat-layout indexes, so one PyTorch proxy serves every CUDA and CPU build.
+
+### Added
+
+- PyPI proxies serve sub-indexes of their remote (`/<sub>/simple/<project>/`) and detect whether the upstream uses
+  the standard `simple/` layout or a flat one. One proxy of `https://download.pytorch.org/whl` now serves every
+  PyTorch CUDA/CPU build, current and future. The create form offers it as a preset, and *Test connection* no
+  longer fails on flat indexes.
+
 ## [1.7.1]
 
 Fixes from a code review: Maven metadata after deletes, faster large deletes, and safer package uploads.

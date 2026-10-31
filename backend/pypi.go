@@ -44,11 +44,41 @@ func pypiVersion(file string) string {
 
 type pypiLink struct{ File, URL, Frag, Attrs string }
 
-func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p string, u *User) {
-	switch {
-	case r.Method == http.MethodPost:
+// pypiSplit separates an optional sub-index prefix from the standard layout:
+// "cu126/simple/torch/" -> ("cu126", "simple/torch/"). A proxy serves any sub-path of its remote
+// as an index of its own, so one proxy of https://download.pytorch.org/whl covers cu126, cu128, cpu
+// and every future flavor without configuration.
+func pypiSplit(p string) (sub, rest string) {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if i > 4 {
+			break
+		}
+		if s == "simple" || s == "packages" {
+			return strings.Join(segs[:i], "/"), strings.Join(segs[i:], "/")
+		}
+	}
+	return "", p
+}
+
+var pypiSubRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$`)
+
+func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, full string, u *User) {
+	if r.Method == http.MethodPost {
 		a.pypiUpload(w, r, repo, u)
+		return
+	}
+	sub, p := pypiSplit(full)
+	if sub != "" && (repo.Type == "hosted" || !pypiSubRe.MatchString(sub)) {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
 	case p == "simple" || p == "simple/":
+		if sub != "" { // an upstream sub-index cannot be listed, only queried by project name
+			http.NotFound(w, r)
+			return
+		}
 		names := a.pypiProjects(repo, 0)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, "<!DOCTYPE html>\n<html><head><title>Simple index</title></head><body>\n")
@@ -62,7 +92,7 @@ func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p 
 			return
 		}
 		name := pypiNormalize(strings.Trim(strings.TrimPrefix(p, "simple/"), "/"))
-		links, err := a.pypiLinks(r.Context(), repo, name, 0)
+		links, err := a.pypiLinks(r.Context(), repo, sub, name, 0)
 		if err != nil || len(links) == 0 {
 			http.NotFound(w, r)
 			return
@@ -78,7 +108,7 @@ func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p 
 		}
 		fmt.Fprint(w, "</body></html>\n")
 	case strings.HasPrefix(p, "packages/") && validPath(p):
-		x, err := a.resolve(r.Context(), repo, p, nil, 0)
+		x, err := a.resolve(r.Context(), repo, full, nil, 0)
 		if err != nil {
 			resolveError(w, err)
 			return
@@ -90,9 +120,12 @@ func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p 
 }
 
 // pypiLinks gathers distribution files for a project across the repository (and group members).
-func (a *App) pypiLinks(ctx context.Context, repo *Repo, name string, depth int) ([]pypiLink, error) {
+func (a *App) pypiLinks(ctx context.Context, repo *Repo, sub, name string, depth int) ([]pypiLink, error) {
 	switch repo.Type {
 	case "hosted":
+		if sub != "" {
+			return nil, nil
+		}
 		list, err := a.assetsUnder(repo.Name, "packages/"+name+"/")
 		var out []pypiLink
 		for _, x := range list {
@@ -100,7 +133,7 @@ func (a *App) pypiLinks(ctx context.Context, repo *Repo, name string, depth int)
 		}
 		return out, err
 	case "proxy":
-		return a.pypiRemoteLinks(ctx, repo, name)
+		return a.pypiRemoteLinks(ctx, repo, sub, name)
 	case "group":
 		var out []pypiLink
 		seen := map[string]bool{}
@@ -108,7 +141,7 @@ func (a *App) pypiLinks(ctx context.Context, repo *Repo, name string, depth int)
 			return nil, nil
 		}
 		for _, m := range a.members(repo) {
-			links, _ := a.pypiLinks(ctx, m, name, depth+1)
+			links, _ := a.pypiLinks(ctx, m, sub, name, depth+1)
 			for _, l := range links {
 				if !seen[l.File] {
 					seen[l.File] = true
@@ -121,8 +154,49 @@ func (a *App) pypiLinks(ctx context.Context, repo *Repo, name string, depth int)
 	return nil, errNotFound
 }
 
-func (a *App) pypiRemoteLinks(ctx context.Context, repo *Repo, name string) ([]pypiLink, error) {
-	x, err := a.proxyGet(ctx, repo, "simple/"+name+"/index.html", acceptHTML)
+// pypiPrefix is the cache path prefix of a sub-index ("" for the default index).
+func pypiPrefix(sub string) string {
+	if sub == "" {
+		return ""
+	}
+	return sub + "/"
+}
+
+// pypiPageURL returns the upstream URL of a project page. Indexes use either the standard layout
+// (<root>/simple/<name>/) or a flat one (<root>/<name>/, as download.pytorch.org/whl/cu126 does).
+// The layout is found by probing once per index and remembered.
+func (a *App) pypiPageURL(ctx context.Context, repo *Repo, sub, name string) string {
+	root := strings.TrimSuffix(repo.RemoteURL, "/")
+	if sub != "" {
+		root += "/" + sub
+	}
+	std, flat := root+"/simple/"+name+"/", root+"/"+name+"/"
+	key := root
+	if v, ok := a.pypiLayout.Load(key); ok {
+		if v.(bool) {
+			return flat
+		}
+		return std
+	}
+	for _, c := range []struct {
+		url  string
+		flat bool
+	}{{std, false}, {flat, true}} {
+		resp, err := a.fetchRemote(ctx, repo, c.url, acceptHTML)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			a.pypiLayout.Store(key, c.flat)
+			return c.url
+		}
+	}
+	return std
+}
+
+func (a *App) pypiRemoteLinks(ctx context.Context, repo *Repo, sub, name string) ([]pypiLink, error) {
+	x, err := a.proxyGet(ctx, repo, pypiPrefix(sub)+"simple/"+name+"/index.html", acceptHTML)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +204,7 @@ func (a *App) pypiRemoteLinks(ctx context.Context, repo *Repo, name string) ([]p
 	if err != nil {
 		return nil, err
 	}
-	base, err := url.Parse(strings.TrimSuffix(repo.RemoteURL, "/") + "/simple/" + name + "/")
+	base, err := url.Parse(a.pypiPageURL(ctx, repo, sub, name))
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +230,8 @@ func (a *App) pypiRemoteLinks(ctx context.Context, repo *Repo, name string) ([]p
 
 // pypiFileURL finds the upstream URL for a file via the cached project page,
 // so the proxy only ever fetches URLs the upstream index advertised.
-func (a *App) pypiFileURL(ctx context.Context, repo *Repo, name, file string) (string, error) {
-	links, err := a.pypiRemoteLinks(ctx, repo, name)
+func (a *App) pypiFileURL(ctx context.Context, repo *Repo, sub, name, file string) (string, error) {
+	links, err := a.pypiRemoteLinks(ctx, repo, sub, name)
 	if err != nil {
 		return "", err
 	}

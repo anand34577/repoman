@@ -250,6 +250,23 @@ Good to know:
   (`/pypi/<name>/json`) are not.
 - Re-uploading an existing file fails with *400* unless *Allow redeploy* is on, matching pypi.org's behaviour.
 
+### Other indexes and sub-indexes (PyTorch, private mirrors)
+
+A proxy can mirror any PEP 503 index, not only pypi.org. Anything after the remote URL is served as a sub-index:
+`/repository/<proxy>/<sub>/simple/<project>/` is fetched from `<remote>/<sub>/...`. Both upstream layouts are
+detected automatically: the standard `<root>/simple/<project>/` and the flat `<root>/<project>/` used by
+`download.pytorch.org`. File links may point at other hosts, and different sub-indexes never share cache entries.
+
+One proxy therefore covers every PyTorch build, including ones that do not exist yet:
+
+```
+# proxy: remote https://download.pytorch.org/whl   (preset "PyTorch" in the UI)
+pip install torch --index-url https://repo.example.com/repository/pytorch-whl/cu126/simple/
+pip install torch --index-url https://repo.example.com/repository/pytorch-whl/cpu/simple/
+```
+
+Sub-indexes exist on proxies, and through groups that contain one; hosted repositories only serve their own
+`/simple/`. A sub-index cannot be listed (`/<sub>/simple/` is 404); pip only asks for projects by name.
 ## Docker / OCI
 
 Clients: Docker, Podman, containerd/Kubernetes, Buildah, Skopeo, and `helm` for OCI charts.
