@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0]
+
 Proxies serve large files while they download instead of after.
 
 ### Changed
