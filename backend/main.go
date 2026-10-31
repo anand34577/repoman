@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"golang.org/x/sync/singleflight"
 )
 
 // Set at release time: go build -ldflags "-X main.version=1.2.3 -X main.commit=abc1234 -X main.buildDate=2026-01-02"
@@ -56,11 +55,14 @@ type App struct {
 	authCache map[string]cachedAuth
 	fails     map[string]loginFails
 
-	fetches    singleflight.Group // collapses concurrent proxy misses for the same path
-	negCache   sync.Map           // repo\x00path -> time.Time expiry for upstream 404s
-	pypiLayout sync.Map           // upstream index root -> true when it uses the flat <root>/<name>/ layout
-	health     sync.Map           // repo -> *proxyHealth
-	healthMu   sync.Mutex         // guards the *proxyHealth values; never held across I/O
+	live        map[string]*liveDL // proxy downloads in flight, by repo+path (see live.go)
+	liveMu      sync.Mutex
+	dl          downloadStats
+	diskReserve int64      // free bytes to leave on the data disk when caching a download
+	negCache    sync.Map   // repo\x00path -> time.Time expiry for upstream 404s
+	pypiLayout  sync.Map   // upstream index root -> true when it uses the flat <root>/<name>/ layout
+	health      sync.Map   // repo -> *proxyHealth
+	healthMu    sync.Mutex // guards the *proxyHealth values; never held across I/O
 
 	keyMu      sync.Mutex
 	signingKey *openpgp.Entity
@@ -73,6 +75,7 @@ type App struct {
 	// upstreamRetry is how long an unreachable upstream is left alone before the next attempt;
 	// in between, proxies answer from cache at once instead of waiting for another timeout.
 	upstreamRetry time.Duration
+	upstreamIdle  time.Duration // a download whose upstream sends nothing for this long is aborted
 
 	notifyQ     chan notifyJob // bounded queue of outgoing push notifications
 	quotaWarned sync.Map       // repo -> time.Time of the last "quota reached" event
@@ -396,11 +399,14 @@ func newApp(dataDir string) (*App, error) {
 			ResponseHeaderTimeout: 60 * time.Second,
 			MaxIdleConnsPerHost:   16,
 			IdleConnTimeout:       90 * time.Second,
-		}},
+		}, CheckRedirect: redirectPolicy},
 		authCache:     map[string]cachedAuth{},
 		fails:         map[string]loginFails{},
 		tasks:         map[string]*taskState{},
 		upstreamRetry: 30 * time.Second,
+		upstreamIdle:  time.Minute,
+		live:          map[string]*liveDL{},
+		diskReserve:   256 << 20,
 		notifyQ:       make(chan notifyJob, 256),
 		dlPending:     map[int64]dlCount{},
 		searchIndex:   ensureSearchIndex(db),
@@ -447,6 +453,8 @@ func (a *App) routes() http.Handler {
 	handle("POST /api/repositories/{name}/upload", roleViewer, a.uploadAPI)
 	handle("POST /api/repositories/{name}/cleanup", roleAdmin, a.cleanupAPI)
 	handle("POST /api/repositories/{name}/invalidate", roleAdmin, a.invalidateAPI)
+	handle("POST /api/repositories/{name}/warm", roleAdmin, a.warmAPI)
+	handle("GET /api/system/downloads", roleAdmin, a.downloadsAPI)
 	handle("POST /api/repositories/{name}/reindex", roleAdmin, a.reindexAPI)
 	handle("GET /api/repositories/{name}/permissions", roleAdmin, a.getPermsAPI)
 	handle("PUT /api/repositories/{name}/permissions", roleAdmin, a.putPermsAPI)

@@ -5,6 +5,33 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0]
+
+Proxies serve large files while they download instead of after.
+
+### Changed
+
+- A proxy cache miss no longer makes the client wait for the whole file. The first byte reaches the client as soon as
+  the upstream answers, so clients with short timeouts (Hugging Face waits 10 seconds) no longer fail on large files.
+  This applies to every format. One download per file runs on its own: clients that ask meanwhile, HEAD requests and
+  `Range` (resume) requests are all served from it, and the upstream is contacted once.
+- Hugging Face: the commit id the hub reports is passed on and kept with the cached file, and a request pinned to
+  that commit is answered from the download of the same file under `main` instead of fetching it a second time.
+
+### Added
+
+- *Warm cache* (repository Actions menu, `POST /api/repositories/{name}/warm`) fetches listed paths in the background.
+- The Dashboard shows proxy downloads in progress with their progress and the number of clients receiving each, and
+  refreshes itself; its overview cards link to their pages. `GET /api/system/downloads` and the
+  `repoman_proxy_download*` metrics expose the same numbers.
+- A proxy refuses to cache a file that would leave less than 256 MB free on the data disk (507 instead of a failure
+  halfway through).
+
+### Fixed
+
+- A download whose upstream stops sending data is abandoned after one minute instead of holding the request, and
+  every client waiting on the same file, forever. A truncated download is never cached.
+
 ## [1.8.0]
 
 PyPI proxies can mirror sub-indexes and flat-layout indexes, so one PyTorch proxy serves every CUDA and CPU build.

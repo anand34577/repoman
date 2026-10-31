@@ -1,34 +1,35 @@
 import type { ReactNode } from 'react'
 import {
-  Anchor, Badge, Button, Card, CloseButton, Group, Progress, SimpleGrid, Skeleton, Stack, Text, ThemeIcon,
+  ActionIcon, Anchor, Badge, Button, Card, CloseButton, Group, Progress, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Tooltip,
 } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
 import {
-  IconAlertTriangle, IconArchive, IconArrowRight, IconCircleCheckFilled, IconCircleDashed, IconCloudDownload, IconDatabase, IconPlus, IconServer,
+  IconAlertTriangle, IconArchive, IconArrowRight, IconCircleCheckFilled, IconCircleDashed, IconCloudDownload, IconDatabase, IconPlus, IconRefresh, IconServer,
 } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useAuth, useIsAdmin } from '../App'
-import { useApi, type Asset, type Stats } from '../api'
+import { useApi, type Asset, type Downloads, type Stats } from '../api'
 import { formatInfo, FormatIcon } from '../formats'
-import { EmptyState, formatBytes, LoadError, PageHeader, plural, StatusBadge, timeAgo } from '../util'
+import { EmptyState, formatBytes, LoadError, PageHeader, plural, StatusBadge, timeAgo, useAutoRefresh } from '../util'
 import { assetLink } from '../links'
 import { DayChart } from '../usage'
 
-function StatCard({ label, value, hint, icon: Icon, color }: { label: string; value: string | number; hint?: string; icon: typeof IconServer; color: string }) {
-  return (
-    <Card padding="lg" className="stat-card">
-      <Group justify="space-between" align="flex-start" wrap="nowrap">
-        <div style={{ minWidth: 0 }}>
-          <Text size="xs" c="dimmed" tt="uppercase" fw={600} className="page-eyebrow">{label}</Text>
-          <Text fz={28} fw={700} mt={6} lh={1.1}>{value}</Text>
-          {hint && <Text size="xs" c="dimmed">{hint}</Text>}
-        </div>
-        <div className="stat-icon" style={{ background: `var(--mantine-color-${color}-light)`, color: `var(--mantine-color-${color}-6)` }}>
-          <Icon size={22} />
-        </div>
-      </Group>
-    </Card>
+function StatCard({ label, value, hint, icon: Icon, color, to }: { label: string; value: string | number; hint?: string; icon: typeof IconServer; color: string; to?: string }) {
+  const body = (
+    <Group justify="space-between" align="flex-start" wrap="nowrap">
+      <div style={{ minWidth: 0 }}>
+        <Text size="xs" c="dimmed" tt="uppercase" fw={600} className="page-eyebrow">{label}</Text>
+        <Text fz={28} fw={700} mt={6} lh={1.1}>{value}</Text>
+        {hint && <Text size="xs" c="dimmed">{hint}</Text>}
+      </div>
+      <div className="stat-icon" style={{ background: `var(--mantine-color-${color}-light)`, color: `var(--mantine-color-${color}-6)` }}>
+        <Icon size={22} />
+      </div>
+    </Group>
   )
+  return to
+    ? <Card component={Link} to={to} padding="lg" className="stat-card card-link" aria-label={`${label}: ${value}. Open details`}>{body}</Card>
+    : <Card padding="lg" className="stat-card">{body}</Card>
 }
 
 function AssetList({ title, assets, metric, empty }: { title: string; assets?: Asset[]; metric: (a: Asset) => string; empty: string }) {
@@ -116,6 +117,51 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/** Downloads a proxy is fetching right now. Every client asking for the file meanwhile is served from the same download. */
+function LiveDownloads() {
+  const { data, reload } = useApi<Downloads>('/system/downloads')
+  const active = data?.active ?? []
+  useAutoRefresh(reload, active.length ? 2000 : 5000)
+  const t = data?.totals
+  return (
+    <Card padding="lg">
+      <CardTitle title="Proxy downloads" />
+      {!data ? <Skeleton h={48} /> : active.length === 0 ? (
+        <Text size="sm" c="dimmed">Nothing is being downloaded from an upstream right now. When a proxy fetches a file it hasn't cached yet, it shows up here with its progress, and clients receive it while it arrives.</Text>
+      ) : (
+        <Stack gap="md" aria-live="polite">
+          {active.map((d) => {
+            const pct = d.total > 0 ? Math.min(100, (d.bytes / d.total) * 100) : 0
+            return (
+              <div key={d.repo + d.path}>
+                <Group justify="space-between" wrap="nowrap" gap="xs" mb={4}>
+                  <Tooltip label={`${d.repo}/${d.path}`} openDelay={400} withinPortal>
+                    <Text size="sm" fw={500} truncate="end" style={{ minWidth: 0 }}>{d.path.split('/').pop()}</Text>
+                  </Tooltip>
+                  <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                    {d.headersReceived ? <>{formatBytes(d.bytes)}{d.total > 0 && <> of {formatBytes(d.total)}</>}</> : 'connecting…'}
+                  </Text>
+                </Group>
+                <Progress value={d.total > 0 ? pct : 100} animated={d.total <= 0 || pct < 100} size="sm" color={d.headersReceived ? 'brand' : 'gray'} />
+                <Group gap="xs" mt={4}>
+                  <Text size="xs" c="dimmed">{d.repo}</Text>
+                  <Text size="xs" c="dimmed">· {d.clients === 1 ? '1 client' : `${d.clients} clients`} receiving it</Text>
+                </Group>
+              </div>
+            )
+          })}
+        </Stack>
+      )}
+      {t && (t.started > 0 || t.failed > 0) && (
+        <Text size="xs" c="dimmed" mt="md">
+          Since the server started: {plural(t.started, 'download')} from upstreams ({formatBytes(t.bytes)} received); {plural(t.joined, 'request')} shared one that was already running
+          {t.failed > 0 && <>, <Text span c="orange" size="xs">{t.failed} failed{t.stalled > 0 && ` (${t.stalled} stalled)`}</Text></>}.
+        </Text>
+      )}
+    </Card>
+  )
+}
+
 const statuses = [['online', 'teal', 'online'], ['degraded', 'orange', 'remote unavailable'], ['offline', 'gray', 'offline']] as const
 
 /** Hosted (published here) against cached (copied by proxies), as one split bar with a legend. */
@@ -149,7 +195,8 @@ function StorageSplit({ s }: { s: Stats }) {
 export default function Dashboard() {
   const { user } = useAuth()
   const isAdmin = useIsAdmin()
-  const { data: s, error, reload } = useApi<Stats>('/stats')
+  const { data: s, error, loading, reload } = useApi<Stats>('/stats')
+  useAutoRefresh(reload, 60_000)
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
   const used = (s?.formats ?? []).filter((f) => f.repos > 0).sort((a, b) => b.bytes - a.bytes || b.assets - a.assets)
@@ -163,18 +210,22 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader eyebrow="Dashboard" title={`${greeting}, ${user.username}`} description="Here's what's happening across your repositories."
-        action={isAdmin && <Button component={Link} to="/repositories/new" leftSection={<IconPlus size={16} />}>Create repository</Button>} />
+        action={
+          <Group gap="xs" wrap="nowrap">
+            <Tooltip label="Refresh (updates itself every minute)"><ActionIcon variant="default" size="lg" aria-label="Refresh dashboard" onClick={reload} loading={loading && !!s}><IconRefresh size={18} /></ActionIcon></Tooltip>
+            {isAdmin && <Button component={Link} to="/repositories/new" leftSection={<IconPlus size={16} />}>Create repository</Button>}
+          </Group>} />
       <LoadError error={error} retry={reload} />
       {isAdmin && s && <GettingStarted setup={s.setup} />}
 
       <Section title="Overview">
         <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }}>
           {s ? <>
-            <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={typeMix || plural(s.users, 'user')} />
+            <StatCard label="Repositories" value={s.repositories} icon={IconDatabase} color="brand" hint={typeMix || plural(s.users, 'user')} to="/repositories" />
             <StatCard label="Artifacts" value={s.assets.toLocaleString()} icon={IconArchive} color="teal"
-              hint={filled.length ? `in ${plural(filled.length, 'format')}` : undefined} />
+              hint={filled.length ? `in ${plural(filled.length, 'format')}` : undefined} to="/search" />
             <StatCard label="Storage on disk" value={formatBytes(s.storageBytes)} icon={IconServer} color="blue"
-              hint={s.logicalBytes > s.storageBytes ? `${formatBytes(s.logicalBytes - s.storageBytes)} saved by deduplication` : undefined} />
+              hint={s.logicalBytes > s.storageBytes ? `${formatBytes(s.logicalBytes - s.storageBytes)} saved by deduplication` : undefined} to={isAdmin ? '/storage' : undefined} />
             <StatCard label="Downloads" value={s.downloads.toLocaleString()} icon={IconCloudDownload} color="orange"
               hint={`${recentDownloads.toLocaleString()} in the last 30 days`} />
           </> : Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={96} radius="lg" />)}
@@ -223,6 +274,12 @@ export default function Dashboard() {
         </Card>
       </SimpleGrid>
       </Section>
+
+      {isAdmin && !!s?.types?.proxy && (
+        <Section title="Proxy cache">
+          <SimpleGrid cols={{ base: 1, md: 2 }} style={{ alignItems: 'start' }}><LiveDownloads /></SimpleGrid>
+        </Section>
+      )}
 
       <Section title="Storage">
         <Card padding="lg">

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path"
 	"regexp"
@@ -60,11 +62,24 @@ func (a *App) proxyGet(ctx context.Context, repo *Repo, p string, hdr http.Heade
 		}
 		return nil, httpErr{http.StatusBadGateway, fmt.Sprintf("the upstream of %s is unreachable and this file is not cached yet; next attempt in %d s", repo.Name, int(wait.Seconds())+1)}
 	}
-	// concurrent misses for the same path share one upstream download
-	v, ferr, _ := a.fetches.Do(negKey, func() (any, error) {
-		return a.fetchAndStore(context.WithoutCancel(ctx), repo, p, hdr) // finish caching even if this client disconnects
-	})
+	// concurrent misses for the same path share one upstream download, and every client is served as it arrives
+	var cachedAt int64
+	if cached != nil {
+		cachedAt = cached.UpdatedAt
+	}
+	d := a.joinLive(repo, p, hdr, cachedAt)
+	var x *Asset
+	var ferr error
+	sink, _ := ctx.Value(streamKey{}).(*streamSink)
+	if sink != nil && !sink.started {
+		x, ferr = a.serveLive(sink, d)
+	} else {
+		x, ferr = d.wait(ctx)
+	}
 	if ferr != nil {
+		if sink != nil && sink.started {
+			return nil, ferr // bytes are out: a stale copy cannot replace the response
+		}
 		if errors.Is(ferr, errNotFound) {
 			a.negCache.Store(negKey, time.Now().Add(negativeCacheTTL))
 		}
@@ -74,35 +89,72 @@ func (a *App) proxyGet(ctx context.Context, repo *Repo, p string, hdr http.Heade
 		}
 		return nil, ferr
 	}
-	return v.(*Asset), nil
+	return x, nil
 }
 
-// ponytail: proxies download fully before serving; tee to the client if first-byte latency on huge files matters
-func (a *App) fetchAndStore(ctx context.Context, repo *Repo, p string, hdr http.Header) (*Asset, error) {
-	u, err := a.upstreamURL(ctx, repo, p)
+// streamSink lets the request that reaches a proxy cache miss be answered from the running download,
+// instead of after it: see liveDL.
+type streamSink struct {
+	w          http.ResponseWriter
+	r          *http.Request
+	hdr        http.Header // extra response headers (e.g. Docker-Content-Digest); a Content-Type here wins over upstream's
+	needCommit bool        // add X-Repo-Commit from the upstream's answer (Hugging Face), unless hdr already has it
+	started    bool        // response headers are out: an error can no longer be reported as a status
+}
+
+type streamKey struct{}
+
+// streamTo returns a context that lets a proxy cache miss for this request stream into w.
+// After resolve, call sink.handled(err): true means the response is complete (or was aborted) and the handler must return.
+func streamTo(w http.ResponseWriter, r *http.Request) (context.Context, *streamSink) {
+	s := &streamSink{w: w, r: r, hdr: http.Header{}}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return r.Context(), s
+	}
+	return context.WithValue(r.Context(), streamKey{}, s), s
+}
+
+func (s *streamSink) handled(err error) bool {
+	if !s.started {
+		return false
+	}
 	if err != nil {
-		return nil, err
+		panic(http.ErrAbortHandler) // cut the connection so the client sees a truncated download rather than a short "complete" one
 	}
-	resp, err := a.fetchRemote(ctx, repo, u, hdr)
-	if err != nil {
-		a.upstreamFailed(repo.Name, err)
-		return nil, err
+	return true
+}
+
+// idleBody aborts a download whose upstream goes silent: without it a stalled connection would hold the
+// shared download (and every client waiting on it) forever, as the upstream client has no body timeout.
+type idleBody struct {
+	io.ReadCloser
+	t *time.Timer
+	d time.Duration
+}
+
+func newIdleBody(rc io.ReadCloser, d time.Duration, cancel context.CancelFunc) io.ReadCloser {
+	if d <= 0 {
+		return rc
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-		a.recordHealth(repo.Name, nil)
-		return nil, errNotFound
+	return &idleBody{rc, time.AfterFunc(d, cancel), d}
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.t.Reset(b.d)
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.t.Stop()
+	return b.ReadCloser.Close()
+}
+
+func guessType(p string) string {
+	if ct := mime.TypeByExtension(path.Ext(p)); ct != "" {
+		return ct
 	}
-	if resp.StatusCode != http.StatusOK {
-		err := upstreamStatus{u, resp.StatusCode, resp.Status}
-		a.upstreamFailed(repo.Name, err)
-		return nil, err
-	}
-	a.recordHealth(repo.Name, nil)
-	comp, ver := componentOf(repo.Format, p)
-	return a.putAsset(repo.Name, p, resp.Body, assetMeta{
-		ContentType: resp.Header.Get("Content-Type"), Component: comp, Version: ver, Uploader: "proxy",
-	})
+	return "application/octet-stream"
 }
 
 // ---------- proxy health ----------
@@ -611,7 +663,11 @@ func (a *App) rawHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p s
 		if repo.Format == "maven" && repo.Type == "group" && a.mavenGroupMetadata(w, r, repo, p) {
 			return
 		}
-		x, err := a.resolve(r.Context(), repo, p, r.Header, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, p, r.Header, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

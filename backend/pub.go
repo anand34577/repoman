@@ -63,7 +63,11 @@ func (a *App) pubHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p s
 		w.Header().Set("Location", finish)
 		w.WriteHeader(http.StatusNoContent)
 	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasPrefix(p, "api/archives/"):
-		x, err := a.resolve(r.Context(), repo, p, nil, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, p, nil, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

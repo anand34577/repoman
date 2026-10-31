@@ -140,6 +140,12 @@ export interface Task {
   running: boolean
 }
 
+/** Proxy downloads in flight (GET /system/downloads): each is served to every waiting client while it is cached. */
+export interface Downloads {
+  active: { repo: string; path: string; bytes: number; total: number; startedAt: number; clients: number; headersReceived: boolean }[]
+  totals: { started: number; joined: number; failed: number; stalled: number; bytes: number }
+}
+
 export interface Stats {
   repositories: number
   assets: number

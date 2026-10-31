@@ -65,7 +65,11 @@ func (a *App) cargoGet(w http.ResponseWriter, r *http.Request, repo *Repo, p str
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(cfg)
 	case cargoDownloadRe.MatchString(p):
-		x, err := a.resolve(r.Context(), repo, p, nil, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, p, nil, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

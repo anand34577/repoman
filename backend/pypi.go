@@ -108,7 +108,11 @@ func (a *App) pypiHandler(w http.ResponseWriter, r *http.Request, repo *Repo, fu
 		}
 		fmt.Fprint(w, "</body></html>\n")
 	case strings.HasPrefix(p, "packages/") && validPath(p):
-		x, err := a.resolve(r.Context(), repo, full, nil, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, full, nil, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

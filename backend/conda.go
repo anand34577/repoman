@@ -41,7 +41,11 @@ func (a *App) condaHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p
 			a.condaRepodata(w, repo, dir)
 			return
 		}
-		x, err := a.resolve(r.Context(), repo, p, r.Header, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, p, r.Header, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

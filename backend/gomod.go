@@ -64,7 +64,11 @@ func (a *App) goHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p st
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Write([]byte(strings.Join(vers, "\n") + "\n"))
 		default:
-			x, err := a.resolve(r.Context(), repo, p, nil, 0)
+			sctx, sink := streamTo(w, r)
+			x, err := a.resolve(sctx, repo, p, nil, 0)
+			if sink.handled(err) {
+				return
+			}
 			if err != nil {
 				resolveError(w, err)
 				return
@@ -230,7 +234,11 @@ func (a *App) goLatest(w http.ResponseWriter, r *http.Request, repo *Repo, mod s
 			}
 		}
 	}
-	x, err := a.resolve(r.Context(), repo, mod+"/@latest", nil, 0)
+	sctx, sink := streamTo(w, r)
+	x, err := a.resolve(sctx, repo, mod+"/@latest", nil, 0)
+	if sink.handled(err) {
+		return
+	}
 	if err != nil {
 		resolveError(w, err)
 		return
