@@ -75,17 +75,28 @@ func (a *App) hfHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p st
 			http.NotFound(w, r)
 			return
 		}
-		x, err := a.hfResolve(r.Context(), repo, p, 0)
+		_, rev := hfComponent(p)
+		sctx, sink := streamTo(w, r)
+		sink.needCommit = true
+		if hexCommitRe.MatchString(rev) {
+			sink.hdr.Set("X-Repo-Commit", rev)
+		}
+		x, err := a.hfResolve(sctx, repo, p, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return
 		}
-		_, rev := hfComponent(p)
 		commit := rev
 		if !hexCommitRe.MatchString(rev) {
-			// upstream's commit id is on the redirect a proxy follows, so derive a stable one from the content
+			// upstream's commit id (kept with the cached file), else a stable one derived from the content
 			sum := sha1.Sum([]byte(x.Blob))
 			commit = hex.EncodeToString(sum[:])
+			if c := upstreamCommitOf(x); c != "" {
+				commit = c
+			}
 			if holder, err := a.getRepo(x.Repo); err == nil && holder.Type == "hosted" {
 				commit = a.hfCommit(x.Repo, x.Component)
 			}
@@ -126,7 +137,7 @@ func (a *App) hfResolve(ctx context.Context, repo *Repo, p string, depth int) (*
 		stored, _ := hfMain(p)
 		return a.findAsset(repo.Name, stored)
 	case "proxy":
-		return a.proxyGet(ctx, repo, p, nil)
+		return a.hfProxyGet(ctx, repo, p)
 	case "group":
 		if depth <= 5 {
 			for _, m := range a.members(repo) {
@@ -137,6 +148,56 @@ func (a *App) hfResolve(ctx context.Context, repo *Repo, p string, depth int) (*
 		}
 	}
 	return nil, errNotFound
+}
+
+// upstreamCommitOf is the commit id the upstream reported when a proxy cached the file ("" if none).
+func upstreamCommitOf(x *Asset) string {
+	var at struct {
+		UpstreamCommit string `json:"upstreamCommit"`
+	}
+	json.Unmarshal(x.Attrs, &at)
+	return at.UpstreamCommit
+}
+
+// hfProxyGet fetches a file through a proxy. The client first asks for <id>/resolve/main/<file> and then for the same
+// file pinned to the commit it learned from that answer: the pinned request is satisfied from the branch download
+// (running or finished) instead of fetching the file a second time.
+func (a *App) hfProxyGet(ctx context.Context, repo *Repo, p string) (*Asset, error) {
+	left, rest, _ := strings.Cut(p, "/resolve/")
+	rev, file, _ := strings.Cut(rest, "/")
+	if !hexCommitRe.MatchString(rev) || hfIsMetadata(p) {
+		return a.proxyGet(ctx, repo, p, nil)
+	}
+	if _, err := a.findAsset(repo.Name, p); err == nil {
+		return a.proxyGet(ctx, repo, p, nil)
+	}
+	main := left + "/resolve/main/" + file
+	link := func(src *Asset) (*Asset, error) {
+		return a.linkAsset(repo.Name, p, src, assetMeta{ContentType: src.ContentType, Component: left, Version: rev, Uploader: "proxy"})
+	}
+	if src, err := a.findAsset(repo.Name, main); err == nil && upstreamCommitOf(src) == rev {
+		return link(src)
+	}
+	a.liveMu.Lock()
+	d := a.live[repo.Name+"\x00"+main]
+	a.liveMu.Unlock()
+	if d != nil {
+		if s, _ := ctx.Value(streamKey{}).(*streamSink); s != nil && !s.started {
+			if d.waitHeaders(ctx) == nil {
+				d.mu.Lock()
+				same := d.commit == rev
+				d.mu.Unlock()
+				if same {
+					x, err := a.serveLive(s, d)
+					if err == nil && x.ID != 0 {
+						return link(x)
+					}
+					return x, err
+				}
+			}
+		}
+	}
+	return a.proxyGet(ctx, repo, p, nil)
 }
 
 // hfInfo answers api/<kind>/<id>[/revision/<rev>] (p may carry a query string, which only a proxy passes on).

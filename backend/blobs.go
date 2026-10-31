@@ -16,13 +16,14 @@ func (b *Blobs) path(sha string) string {
 }
 
 // Write streams r to a temp file, returning its path and sha256. Call Commit or Discard after.
-func (b *Blobs) Write(r io.Reader) (tmp, sha string, size int64, err error) {
+// Extra writers receive the bytes as they arrive (used to serve a download while it is being cached).
+func (b *Blobs) Write(r io.Reader, extra ...io.Writer) (tmp, sha string, size int64, err error) {
 	f, err := os.CreateTemp(b.dir, "tmp-*")
 	if err != nil {
 		return "", "", 0, err
 	}
 	h := sha256.New()
-	size, err = io.Copy(io.MultiWriter(f, h), r)
+	size, err = io.Copy(io.MultiWriter(append([]io.Writer{f, h}, extra...)...), r)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -32,6 +33,9 @@ func (b *Blobs) Write(r io.Reader) (tmp, sha string, size int64, err error) {
 	}
 	return f.Name(), hex.EncodeToString(h.Sum(nil)), size, nil
 }
+
+// Create opens a temp file in the store for a download that is written (and served) while it grows; finish it with storeTemp.
+func (b *Blobs) Create() (*os.File, error) { return os.CreateTemp(b.dir, "tmp-*") }
 
 func (b *Blobs) Commit(tmp, sha string) error {
 	dst := b.path(sha)

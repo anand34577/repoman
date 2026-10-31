@@ -53,6 +53,11 @@ func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	fmt.Fprintf(w, "# HELP repoman_up RepoMan is running.\n# TYPE repoman_up gauge\nrepoman_up 1\n")
 	fmt.Fprintf(w, "# TYPE repoman_uptime_seconds gauge\nrepoman_uptime_seconds %d\n", int64(time.Since(a.started).Seconds()))
+	fmt.Fprintf(w, "# TYPE repoman_proxy_downloads_total counter\n")
+	for k, v := range map[string]int64{"started": a.dl.started.Load(), "joined": a.dl.joined.Load(), "failed": a.dl.failed.Load(), "stalled": a.dl.stalled.Load()} {
+		fmt.Fprintf(w, "repoman_proxy_downloads_total{result=%q} %d\n", k, v)
+	}
+	fmt.Fprintf(w, "# TYPE repoman_proxy_download_bytes_total counter\nrepoman_proxy_download_bytes_total %d\n", a.dl.bytes.Load())
 	fmt.Fprintf(w, "# TYPE repoman_http_responses_total counter\n")
 	for i := 1; i < len(a.requests); i++ {
 		fmt.Fprintf(w, "repoman_http_responses_total{class=\"%dxx\"} %d\n", i, a.requests[i].Load())

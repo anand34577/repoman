@@ -1,13 +1,13 @@
 import {
   ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Button, Card, Checkbox, Code, Drawer, Group, Loader, Menu, Modal, Progress, Select, SimpleGrid, Skeleton,
-  Stack, Switch, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip,
+  Stack, Switch, Table, Tabs, Text, Textarea, TextInput, ThemeIcon, Title, Tooltip,
 } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import { useDebouncedValue, useDocumentTitle } from '@mantine/hooks'
 import {
   IconAlertTriangle, IconArrowLeft, IconBolt, IconChevronDown, IconChevronRight, IconDots, IconDownload, IconFile, IconFolder,
   IconFolderOpen, IconInfoCircle, IconKey, IconLock, IconPackage, IconPlayerPause, IconPlayerPlay, IconPlugConnected, IconRefresh,
-  IconSearch, IconTrash, IconUpload, IconWand, IconX,
+  IconFlame, IconSearch, IconTrash, IconUpload, IconWand, IconX,
 } from '@tabler/icons-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -125,6 +125,16 @@ function RepoActions({ repo, onChanged, onDeleted }: { repo: Repo; onChanged: ()
   const { reloadRepos } = useAuth()
   const [preview, setPreview] = useState<{ count: number; size: number; sample: Asset[] }>()
   const [cleaning, setCleaning] = useState(false)
+  const [warming, setWarming] = useState(false)
+  const [warmPaths, setWarmPaths] = useState('')
+  const [warmBusy, setWarmBusy] = useState(false)
+  const warmList = warmPaths.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  const warm = () => {
+    setWarmBusy(true)
+    api<{ queued: number }>(`/repositories/${repo.name}/warm`, { method: 'POST', body: { paths: warmList } })
+      .then((r) => { notifyOk(`${plural(r.queued, 'file')} queued — progress shows on the Dashboard under Proxy downloads`); setWarming(false); setWarmPaths('') })
+      .catch(notifyError).finally(() => setWarmBusy(false))
+  }
   const run = (path: string, ok: string) => api(path, { method: 'POST' }).then(() => { notifyOk(ok); onChanged() }).catch(notifyError)
 
   const testConnection = () => api<RemoteTest>('/repositories/test-remote', { body: repo })
@@ -145,6 +155,7 @@ function RepoActions({ repo, onChanged, onDeleted }: { repo: Repo; onChanged: ()
             <Menu.Item leftSection={<IconRefresh size={16} />} onClick={() => run(`/repositories/${repo.name}/invalidate`, 'Cache invalidated — metadata will be re-fetched on next request')}>
               Invalidate cache
             </Menu.Item>
+            <Menu.Item leftSection={<IconFlame size={16} />} onClick={() => setWarming(true)}>Warm cache…</Menu.Item>
           </>}
           {repo.type === 'hosted' && ['apt', 'yum', 'npm'].includes(repo.format) && (
             <Menu.Item leftSection={<IconBolt size={16} />} onClick={() => run(`/repositories/${repo.name}/reindex`, 'Index rebuilt')}>Rebuild index</Menu.Item>
@@ -164,6 +175,20 @@ function RepoActions({ repo, onChanged, onDeleted }: { repo: Repo; onChanged: ()
           })}>Delete repository…</Menu.Item>
         </Menu.Dropdown>
       </Menu>
+
+      <Modal opened={warming} onClose={() => setWarming(false)} title={<Text fw={600}>Warm cache</Text>} size="lg">
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">Fetch files from the remote now, so the first client that needs them doesn't wait. List one path per line, relative to the repository — for example <Text span ff="monospace" size="sm">org/model/resolve/main/model.safetensors</Text>. Files that are already cached are skipped.</Text>
+          <Textarea autosize minRows={5} maxRows={12} value={warmPaths} onChange={(e) => setWarmPaths(e.currentTarget.value)} placeholder="path/to/file" ff="monospace" data-autofocus aria-label="Paths to fetch" />
+          <Group justify="space-between">
+            <Text size="xs" c="dimmed">{warmList.length > 500 ? 'At most 500 files at a time.' : plural(warmList.length, 'file')}</Text>
+            <Group gap="xs">
+              <Button variant="default" onClick={() => setWarming(false)}>Cancel</Button>
+              <Button onClick={warm} loading={warmBusy} disabled={!warmList.length || warmList.length > 500} leftSection={<IconFlame size={16} />}>Fetch in background</Button>
+            </Group>
+          </Group>
+        </Stack>
+      </Modal>
 
       <Modal opened={!!preview} onClose={() => setPreview(undefined)} size="lg" title={<Text fw={600}>Cleanup preview</Text>}>
         {preview && (preview.count === 0 ? (

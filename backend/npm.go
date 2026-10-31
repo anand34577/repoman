@@ -25,7 +25,11 @@ func (a *App) npmHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p s
 	case strings.HasPrefix(p, "-/"):
 		http.NotFound(w, r) // ponytail: no npm search / dist-tag API; the UI search covers browsing
 	case strings.Contains(p, "/-/") && read:
-		x, err := a.resolve(r.Context(), repo, p, nil, 0)
+		sctx, sink := streamTo(w, r)
+		x, err := a.resolve(sctx, repo, p, nil, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			resolveError(w, err)
 			return

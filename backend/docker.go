@@ -116,7 +116,12 @@ func (a *App) dockerBlob(w http.ResponseWriter, r *http.Request, repo *Repo, ima
 	p := image + "/blobs/" + digest
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		x, err := a.resolve(r.Context(), repo, p, r.Header, 0)
+		sctx, sink := streamTo(w, r)
+		sink.hdr = http.Header{"Docker-Content-Digest": {digest}, "Content-Type": {"application/octet-stream"}}
+		x, err := a.resolve(sctx, repo, p, r.Header, 0)
+		if sink.handled(err) {
+			return
+		}
 		if err != nil {
 			dockerErr(w, 404, "BLOB_UNKNOWN", "blob unknown")
 			return

@@ -140,6 +140,19 @@ export function PageHeader({ title, description, action, eyebrow }: { title: str
   )
 }
 
+/** Calls reload every `ms` while the tab is visible (and once more when it becomes visible again); ms 0 pauses it. */
+export function useAutoRefresh(reload: () => unknown, ms: number) {
+  const fn = useRef(reload)
+  fn.current = reload
+  useEffect(() => {
+    if (!ms) return
+    const tick = () => { if (!document.hidden) fn.current() }
+    const id = setInterval(tick, ms)
+    document.addEventListener('visibilitychange', tick)
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', tick) }
+  }, [ms])
+}
+
 /** Server counts stop here (see maxCount in the backend); past it the UI says "10,000+". */
 export const MAX_COUNT = 10000
 const PAGE_SIZES = [25, 50, 100, 250]
