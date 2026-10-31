@@ -55,6 +55,7 @@ export const FORMATS: FormatInfo[] = [
     presets: [
       { label: 'PyPI', url: 'https://pypi.org' },
       { label: 'TestPyPI', url: 'https://test.pypi.org' },
+      { label: 'PyTorch (all CUDA/CPU builds)', url: 'https://download.pytorch.org/whl' },
     ],
     hostedHelp: 'Upload private packages with twine or poetry publish.',
     proxyHelp: 'Cache pypi.org; packages are downloaded once and served locally afterwards.',

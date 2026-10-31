@@ -56,10 +56,11 @@ type App struct {
 	authCache map[string]cachedAuth
 	fails     map[string]loginFails
 
-	fetches  singleflight.Group // collapses concurrent proxy misses for the same path
-	negCache sync.Map           // repo\x00path -> time.Time expiry for upstream 404s
-	health   sync.Map           // repo -> *proxyHealth
-	healthMu sync.Mutex         // guards the *proxyHealth values; never held across I/O
+	fetches    singleflight.Group // collapses concurrent proxy misses for the same path
+	negCache   sync.Map           // repo\x00path -> time.Time expiry for upstream 404s
+	pypiLayout sync.Map           // upstream index root -> true when it uses the flat <root>/<name>/ layout
+	health     sync.Map           // repo -> *proxyHealth
+	healthMu   sync.Mutex         // guards the *proxyHealth values; never held across I/O
 
 	keyMu      sync.Mutex
 	signingKey *openpgp.Entity

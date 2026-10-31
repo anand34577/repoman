@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- PyPI proxies serve sub-indexes of their remote (`/<sub>/simple/<project>/`) and detect whether the upstream uses
+  the standard `simple/` layout or a flat one. One proxy of `https://download.pytorch.org/whl` now serves every
+  PyTorch CUDA/CPU build, current and future. The create form offers it as a preset, and *Test connection* no
+  longer fails on flat indexes.
+
 ## [1.7.1]
 
 Fixes from a code review: Maven metadata after deletes, faster large deletes, and safer package uploads.

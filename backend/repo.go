@@ -229,6 +229,10 @@ func (a *App) testRemote(ctx context.Context, r *Repo) remoteTest {
 	defer cancel()
 	start := time.Now()
 	resp, err := a.fetchRemote(ctx, r, u, http.Header{})
+	if err == nil && r.Format == "pypi" && resp.StatusCode >= 400 { // flat indexes (download.pytorch.org/whl/…) have no /simple/; their root answers instead
+		resp.Body.Close()
+		resp, err = a.fetchRemote(ctx, r, strings.TrimSuffix(r.RemoteURL, "/")+"/", http.Header{})
+	}
 	res := remoteTest{LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
 		res.Message = err.Error()
@@ -257,12 +261,13 @@ func (a *App) upstreamURL(ctx context.Context, repo *Repo, p string) (string, er
 			return base + "/" + strings.Replace(name, "/", "%2f", 1), nil
 		}
 	case "pypi":
-		if rest, ok := strings.CutPrefix(p, "simple/"); ok {
-			return base + "/simple/" + strings.TrimSuffix(rest, "index.html"), nil
+		sub, q := pypiSplit(p)
+		if rest, ok := strings.CutPrefix(q, "simple/"); ok {
+			return a.pypiPageURL(ctx, repo, sub, strings.Trim(strings.TrimSuffix(rest, "index.html"), "/")), nil
 		}
-		if rest, ok := strings.CutPrefix(p, "packages/"); ok {
+		if rest, ok := strings.CutPrefix(q, "packages/"); ok {
 			name, file, _ := strings.Cut(rest, "/")
-			return a.pypiFileURL(ctx, repo, name, file)
+			return a.pypiFileURL(ctx, repo, sub, name, file)
 		}
 	case "docker":
 		// Docker Hub keeps official images under library/
@@ -359,7 +364,8 @@ func isMetadata(format, p string) bool {
 	case "npm":
 		return strings.HasSuffix(p, "/package.json") && !strings.Contains(p, "/-/")
 	case "pypi":
-		return strings.HasPrefix(p, "simple/")
+		_, q := pypiSplit(p)
+		return strings.HasPrefix(q, "simple/")
 	case "docker":
 		return strings.HasSuffix(p, "/tags/list") || (strings.Contains(p, "/manifests/") && !strings.Contains(p, "/manifests/sha256:"))
 	case "go":
@@ -405,11 +411,13 @@ func componentOf(format, p string) (comp, ver string) {
 		}
 		return strings.TrimSuffix(p, "/package.json"), ""
 	case "pypi":
-		if n == 3 && segs[0] == "packages" {
-			return segs[1], pypiVersion(segs[2])
+		_, q := pypiSplit(p)
+		qs := strings.Split(q, "/")
+		if len(qs) == 3 && qs[0] == "packages" {
+			return qs[1], pypiVersion(qs[2])
 		}
-		if n >= 2 && segs[0] == "simple" {
-			return segs[1], ""
+		if len(qs) >= 2 && qs[0] == "simple" {
+			return qs[1], ""
 		}
 	case "docker":
 		for _, k := range []string{"/manifests/", "/blobs/", "/tags/"} {
