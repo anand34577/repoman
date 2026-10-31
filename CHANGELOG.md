@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0]
+
+PyPI proxies can mirror sub-indexes and flat-layout indexes, so one PyTorch proxy serves every CUDA and CPU build.
+
 ### Added
 
 - PyPI proxies serve sub-indexes of their remote (`/<sub>/simple/<project>/`) and detect whether the upstream uses
