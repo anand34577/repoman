@@ -349,6 +349,8 @@ func (a *App) fetchRemote(ctx context.Context, repo *Repo, u string, hdr http.He
 		}
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
+		} else if repo.Format == "huggingface" && repo.RemotePassword != "" {
+			req.Header.Set("Authorization", "Bearer "+repo.RemotePassword) // access token for gated and private repositories
 		} else if repo.RemoteUsername != "" {
 			req.SetBasicAuth(repo.RemoteUsername, repo.RemotePassword)
 		}
@@ -565,6 +567,9 @@ func (a *App) serveAsset(w http.ResponseWriter, r *http.Request, x *Asset) {
 	defer f.Close()
 	w.Header().Set("Content-Type", x.ContentType)
 	w.Header().Set("ETag", `"`+x.Blob+`"`)
+	if et := upstreamAttr(x, "upstreamEtag"); et != "" { // same ETag as on the first (streamed) answer
+		w.Header().Set("ETag", et)
+	}
 	if r.Method == http.MethodGet {
 		a.markDownloaded(x.ID)
 	}
@@ -603,6 +608,9 @@ func (a *App) handleRepo(w http.ResponseWriter, r *http.Request) {
 	write := r.Method != http.MethodGet && r.Method != http.MethodHead
 	if repo.Format == "lfs" && (p == "objects/batch" || p == "verify") {
 		write = false // POSTs that also serve downloads; uploading is checked inside the handler
+	}
+	if repo.Format == "huggingface" && r.Method == http.MethodPost && strings.HasPrefix(p, "api/") && strings.Contains(p, "/paths-info/") {
+		write = false // a read: the client posts the list of paths it wants information about
 	}
 	if !a.can(u, repo, write) {
 		deny(w, u)

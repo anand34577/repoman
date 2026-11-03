@@ -33,6 +33,7 @@ type liveDL struct {
 	total    int64 // -1 when the upstream did not say
 	ctype    string
 	commit   string // upstream commit id, when it sent one (Hugging Face)
+	etag     string // upstream's content hash, when it sent one: Hugging Face clients refuse an answer without an ETag
 	complete bool   // every byte has arrived
 	done     bool
 	err      error
@@ -57,18 +58,23 @@ func (d *liveDL) bump() { // caller holds d.mu
 }
 
 // upstreamCapture carries headers of the first upstream response of a redirect chain out of the HTTP client.
-type upstreamCapture struct{ commit string }
+type upstreamCapture struct{ commit, etag, link string }
 
 type captureKey struct{}
 
-// redirectPolicy is the upstream client's CheckRedirect: the default limit, plus noting X-Repo-Commit, which
-// Hugging Face sends on the redirect to its CDN and not on the file itself.
+// redirectPolicy is the upstream client's CheckRedirect: the default limit, plus noting X-Repo-Commit and
+// X-Linked-Etag (the content hash of a large file), which Hugging Face sends on the redirect to its CDN and not on the file itself.
 func redirectPolicy(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
-	if c, _ := req.Context().Value(captureKey{}).(*upstreamCapture); c != nil && c.commit == "" && req.Response != nil {
-		c.commit = req.Response.Header.Get("X-Repo-Commit")
+	if c, _ := req.Context().Value(captureKey{}).(*upstreamCapture); c != nil && req.Response != nil {
+		if c.commit == "" {
+			c.commit = req.Response.Header.Get("X-Repo-Commit")
+		}
+		if c.etag == "" {
+			c.etag = req.Response.Header.Get("X-Linked-Etag")
+		}
 	}
 	return nil
 }
@@ -140,40 +146,45 @@ func (a *App) runLive(d *liveDL, repo *Repo, p string, hdr http.Header) {
 }
 
 // openUpstream requests a file and classifies the answer; a 200 is returned with its body open.
-func (a *App) openUpstream(ctx context.Context, repo *Repo, p string, hdr http.Header) (*http.Response, string, error) {
+func (a *App) openUpstream(ctx context.Context, repo *Repo, p string, hdr http.Header) (*http.Response, *upstreamCapture, error) {
 	u, err := a.upstreamURL(ctx, repo, p)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	capt := &upstreamCapture{}
 	resp, err := a.fetchRemote(context.WithValue(ctx, captureKey{}, capt), repo, u, hdr)
 	if err != nil {
 		a.upstreamFailed(repo.Name, err)
-		return nil, "", err
+		return nil, nil, err
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		resp.Body.Close()
 		a.recordHealth(repo.Name, nil)
-		return nil, "", errNotFound
+		return nil, nil, errNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		err := upstreamStatus{u, resp.StatusCode, resp.Status}
 		a.upstreamFailed(repo.Name, err)
-		return nil, "", err
+		return nil, nil, err
 	}
 	a.recordHealth(repo.Name, nil)
 	if capt.commit == "" {
 		capt.commit = resp.Header.Get("X-Repo-Commit")
 	}
-	return resp, capt.commit, nil
+	if capt.etag == "" {
+		capt.etag = resp.Header.Get("ETag")
+	}
+	capt.link = resp.Header.Get("Link") // pagination of Hugging Face listings
+	return resp, capt, nil
 }
 
 func (a *App) downloadLive(ctx context.Context, cancel context.CancelFunc, d *liveDL, repo *Repo, p string, hdr http.Header) (*Asset, error) {
-	resp, commit, err := a.openUpstream(ctx, repo, p, hdr)
+	resp, capt, err := a.openUpstream(ctx, repo, p, hdr)
 	if err != nil {
 		return nil, err
 	}
+	commit := capt.commit
 	body := newIdleBody(resp.Body, a.upstreamIdle, cancel)
 	defer body.Close()
 	if err := a.checkDisk(resp.ContentLength); err != nil {
@@ -200,15 +211,23 @@ func (a *App) downloadLive(ctx context.Context, cancel context.CancelFunc, d *li
 	}
 	comp, ver := componentOf(repo.Format, p)
 	m := assetMeta{ContentType: resp.Header.Get("Content-Type"), Component: comp, Version: ver, Uploader: "proxy"}
-	if commit != "" {
-		b, _ := json.Marshal(map[string]string{"upstreamCommit": commit})
-		m.Attrs = string(b)
+	if repo.Format == "huggingface" { // kept so cached answers carry the same headers the upstream sent
+		at := map[string]string{}
+		for k, v := range map[string]string{"upstreamCommit": commit, "upstreamEtag": capt.etag, "upstreamLink": capt.link} {
+			if v != "" {
+				at[k] = v
+			}
+		}
+		if len(at) > 0 {
+			b, _ := json.Marshal(at)
+			m.Attrs = string(b)
+		}
 	}
 	if m.ContentType == "" { // same fallback as upsertLocked, so a streamed response and later cache hits agree
 		m.ContentType = guessType(p)
 	}
 	d.mu.Lock()
-	d.total, d.ctype, d.commit, d.hdrOK = resp.ContentLength, m.ContentType, commit, true
+	d.total, d.ctype, d.commit, d.etag, d.hdrOK = resp.ContentLength, m.ContentType, commit, capt.etag, true
 	d.bump()
 	d.mu.Unlock()
 
@@ -352,7 +371,7 @@ func (a *App) serveLive(s *streamSink, d *liveDL) (*Asset, error) {
 		return nil, err
 	}
 	d.mu.Lock()
-	total, ctype, commit, done := d.total, d.ctype, d.commit, d.done
+	total, ctype, commit, etag, done := d.total, d.ctype, d.commit, d.etag, d.done
 	d.mu.Unlock()
 	if done {
 		return d.wait(ctx)
@@ -367,8 +386,8 @@ func (a *App) serveLive(s *streamSink, d *liveDL) (*Asset, error) {
 		}
 		partial = true
 	}
-	if wantCommit && commit == "" {
-		return d.wait(ctx) // the commit id is derived from the content instead
+	if wantCommit && (commit == "" || etag == "") {
+		return d.wait(ctx) // the commit id and ETag are derived from the content instead
 	}
 	h := s.w.Header()
 	for k, v := range s.hdr {
@@ -376,6 +395,7 @@ func (a *App) serveLive(s *streamSink, d *liveDL) (*Asset, error) {
 	}
 	if wantCommit {
 		h.Set("X-Repo-Commit", commit)
+		h.Set("ETag", etag)
 	}
 	if h.Get("Content-Type") == "" {
 		h.Set("Content-Type", ctype)

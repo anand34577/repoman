@@ -1,14 +1,33 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
 )
+
+var hfLinkHostRe = regexp.MustCompile(`<https?://[^/>]+/`)
+
+// hfNotFound answers a missing item the way the Hub does: huggingface_hub tells a missing optional file
+// (EntryNotFound, which transformers expects and skips) from a missing repository by the X-Error-Code header.
+func hfNotFound(w http.ResponseWriter, p string, err error) {
+	if errors.Is(err, errNotFound) {
+		code := "EntryNotFound"
+		if strings.HasPrefix(p, "api/") {
+			code = "RepoNotFound"
+		}
+		w.Header().Set("X-Error-Code", code)
+		w.Header().Set("X-Error-Message", "not found")
+	}
+	resolveError(w, err)
+}
 
 // Hugging Face Hub: point HF_ENDPOINT at the repository URL. Served: model/dataset/space info
 // (api/<kind>/<id>[/revision/<rev>]) and files (<id>/resolve/<rev>/<file>, with datasets/ or spaces/ in front of
@@ -62,17 +81,20 @@ func (a *App) hfHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p st
 			if r.URL.RawQuery != "" {
 				full += "?" + r.URL.RawQuery
 			}
-			data, err := a.hfInfo(r.Context(), repo, full, 0)
+			data, link, err := a.hfInfo(r.Context(), repo, full, 0)
 			if err != nil {
-				resolveError(w, err)
+				hfNotFound(w, p, err)
 				return
+			}
+			if link != "" { // listings are paged: next pages must come back through this proxy, not go to the Hub
+				w.Header().Set("Link", hfLinkHostRe.ReplaceAllLiteralString(link, "<"+a.baseURL(r)+"/repository/"+repo.Name+"/"))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(data)
 			return
 		}
 		if _, ok := hfMain(p); !ok || !validPath(p) {
-			http.NotFound(w, r)
+			hfNotFound(w, p, errNotFound)
 			return
 		}
 		_, rev := hfComponent(p)
@@ -86,7 +108,7 @@ func (a *App) hfHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p st
 			return
 		}
 		if err != nil {
-			resolveError(w, err)
+			hfNotFound(w, p, err)
 			return
 		}
 		commit := rev
@@ -104,6 +126,19 @@ func (a *App) hfHandler(w http.ResponseWriter, r *http.Request, repo *Repo, p st
 		w.Header().Set("X-Repo-Commit", commit)
 		a.serveAsset(w, r, x)
 	case http.MethodPut, http.MethodPost:
+		if r.Method == http.MethodPost && strings.HasPrefix(p, "api/") { // paths-info: file details for a list of paths
+			body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+			if err == nil {
+				var data []byte
+				if data, err = a.hfPost(r.Context(), repo, p, body, r.Header.Get("Content-Type"), 0); err == nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write(data)
+					return
+				}
+			}
+			hfNotFound(w, p, err)
+			return
+		}
 		stored, ok := hfMain(p)
 		if !ok || !validPath(stored) {
 			http.Error(w, "upload to <org>/<model>/resolve/main/<file>", http.StatusBadRequest)
@@ -150,13 +185,58 @@ func (a *App) hfResolve(ctx context.Context, repo *Repo, p string, depth int) (*
 	return nil, errNotFound
 }
 
-// upstreamCommitOf is the commit id the upstream reported when a proxy cached the file ("" if none).
-func upstreamCommitOf(x *Asset) string {
-	var at struct {
-		UpstreamCommit string `json:"upstreamCommit"`
-	}
+// upstreamAttr is a header the upstream sent when a proxy cached the file (upstreamCommit, upstreamEtag,
+// upstreamLink); "" if there was none.
+func upstreamAttr(x *Asset, key string) string {
+	var at map[string]string
 	json.Unmarshal(x.Attrs, &at)
-	return at.UpstreamCommit
+	return at[key]
+}
+
+func upstreamCommitOf(x *Asset) string { return upstreamAttr(x, "upstreamCommit") }
+
+// hfPost forwards a read-only POST of the Hub API (paths-info) to the upstream of a proxy; answers are not cached.
+func (a *App) hfPost(ctx context.Context, repo *Repo, p string, body []byte, ctype string, depth int) ([]byte, error) {
+	switch repo.Type {
+	case "proxy":
+		u, err := a.upstreamURL(ctx, repo, p)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "RepoMan/"+version)
+		req.Header.Set("Content-Type", ctype)
+		if repo.RemotePassword != "" {
+			req.Header.Set("Authorization", "Bearer "+repo.RemotePassword)
+		}
+		resp, err := a.client.Do(req)
+		if err != nil {
+			a.upstreamFailed(repo.Name, err)
+			return nil, err
+		}
+		defer resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		case http.StatusNotFound, http.StatusGone:
+			return nil, errNotFound
+		}
+		err = upstreamStatus{u, resp.StatusCode, resp.Status}
+		a.upstreamFailed(repo.Name, err)
+		return nil, err
+	case "group":
+		if depth <= 5 {
+			for _, m := range a.members(repo) {
+				if data, err := a.hfPost(ctx, m, p, body, ctype, depth+1); err == nil {
+					return data, nil
+				}
+			}
+		}
+	}
+	return nil, errNotFound
 }
 
 // hfProxyGet fetches a file through a proxy. The client first asks for <id>/resolve/main/<file> and then for the same
@@ -201,29 +281,30 @@ func (a *App) hfProxyGet(ctx context.Context, repo *Repo, p string) (*Asset, err
 }
 
 // hfInfo answers api/<kind>/<id>[/revision/<rev>] (p may carry a query string, which only a proxy passes on).
-func (a *App) hfInfo(ctx context.Context, repo *Repo, p string, depth int) ([]byte, error) {
+func (a *App) hfInfo(ctx context.Context, repo *Repo, p string, depth int) (data []byte, link string, err error) {
 	switch repo.Type {
 	case "proxy":
 		x, err := a.proxyGet(ctx, repo, p, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return a.readAsset(x)
+		data, err = a.readAsset(x)
+		return data, upstreamAttr(x, "upstreamLink"), err
 	case "group":
 		if depth <= 5 {
 			for _, m := range a.members(repo) {
-				if data, err := a.hfInfo(ctx, m, p, depth+1); err == nil {
-					return data, nil
+				if data, link, err := a.hfInfo(ctx, m, p, depth+1); err == nil {
+					return data, link, nil
 				}
 			}
 		}
-		return nil, errNotFound
+		return nil, "", errNotFound
 	}
 	path, _, _ := strings.Cut(p, "?")
 	kind, id, ok := strings.Cut(strings.TrimPrefix(path, "api/"), "/")
 	id, _, _ = strings.Cut(id, "/revision/")
 	if !ok || id == "" || (kind != "models" && kind != "datasets" && kind != "spaces") {
-		return nil, errNotFound
+		return nil, "", errNotFound
 	}
 	key := id
 	if kind != "models" {
@@ -231,11 +312,12 @@ func (a *App) hfInfo(ctx context.Context, repo *Repo, p string, depth int) ([]by
 	}
 	list, err := a.assetsUnder(repo.Name, key+"/resolve/main/")
 	if err != nil || len(list) == 0 {
-		return nil, errNotFound
+		return nil, "", errNotFound
 	}
 	sib := []map[string]string{}
 	for _, x := range list {
 		sib = append(sib, map[string]string{"rfilename": strings.TrimPrefix(x.Path, key+"/resolve/main/")})
 	}
-	return json.Marshal(map[string]any{"id": id, "modelId": id, "sha": a.hfCommit(repo.Name, key), "private": false, "siblings": sib, "tags": []string{}})
+	data, err = json.Marshal(map[string]any{"id": id, "modelId": id, "sha": a.hfCommit(repo.Name, key), "private": false, "siblings": sib, "tags": []string{}})
+	return data, "", err
 }

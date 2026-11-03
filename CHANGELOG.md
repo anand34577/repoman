@@ -5,6 +5,20 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.1]
+
+Hugging Face clients work against a proxy.
+
+### Fixed
+
+- `hf download` and `huggingface_hub` failed on a file that was not cached yet with "Distant resource does not have an
+  ETag": the streamed first answer now carries the Hub's ETag (the file hash), and cached answers repeat it.
+- A missing file answers `X-Error-Code: EntryNotFound` (a missing repository `RepoNotFound`), so `transformers` skips
+  optional files instead of failing.
+- Paged listings (`Link` header) point back to the proxy instead of to huggingface.co.
+- `POST api/…/paths-info/…` is forwarded to the Hub instead of being refused.
+- The access token of a Hugging Face proxy (the password field) is sent as a Bearer token, for gated and private repositories.
+
 ## [1.9.0]
 
 Proxies serve large files while they download instead of after.
