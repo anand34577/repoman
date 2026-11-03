@@ -69,7 +69,7 @@ Under the repository's **Configuration** tab (administrators):
 | **Private** | all | Never readable anonymously, even when anonymous access is enabled server-wide |
 | **Allow redeploy** | hosted | Permit overwriting an existing file. Off by default: a published version is immutable, so a build can never silently change. Exceptions that are always allowed: Maven `-SNAPSHOT` paths and `maven-metadata.xml` |
 | **Storage quota (MB)** | hosted | Refuse uploads with *507 Insufficient Storage* once the repository holds this much. 0 = unlimited. The check happens when an upload starts, so the upload that crosses the line still completes |
-| Remote URL, credentials | proxy | The upstream. *Test connection* checks reachability and credentials before you save |
+| Remote URL, credentials | proxy | The upstream. User name and password are sent as Basic auth; a password alone is sent as a Bearer token (Hugging Face access tokens, private npm registries). *Test connection* checks reachability and credentials before you save |
 | **Metadata cache time** | proxy | Minutes before mutable index data (version lists, tags, `latest`) is re-checked upstream. Artifacts themselves are immutable and cached until cleaned up |
 | Members | group | Ordered list; same format only |
 | Cleanup policy | hosted, proxy | See [below](#cleanup-and-quotas) |

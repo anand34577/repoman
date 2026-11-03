@@ -334,3 +334,24 @@ func TestHuggingFaceClientCompatibility(t *testing.T) {
 		t.Fatalf("paths-info: %d %q", r.StatusCode, b)
 	}
 }
+
+// A proxy with only a token (no user name) sends it as a Bearer token; with a user name it sends Basic auth.
+func TestProxyTokenWithoutUsername(t *testing.T) {
+	e := newEnv(t)
+	var got atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("Authorization"))
+		w.Write([]byte("data"))
+	}))
+	defer up.Close()
+	e.must("create token proxy", 200, "POST", "/api/repositories", jsonBody(map[string]any{"name": "raw-token", "format": "raw", "type": "proxy", "remoteUrl": up.URL, "remotePassword": "s3cret"}), admin)
+	e.must("fetch", 200, "GET", "/repository/raw-token/f.bin", nil, admin)
+	if got.Load() != "Bearer s3cret" {
+		t.Fatalf("Authorization %q", got.Load())
+	}
+	e.must("create basic proxy", 200, "POST", "/api/repositories", jsonBody(map[string]any{"name": "raw-basic", "format": "raw", "type": "proxy", "remoteUrl": up.URL, "remoteUsername": "u", "remotePassword": "p"}), admin)
+	e.must("fetch", 200, "GET", "/repository/raw-basic/f.bin", nil, admin)
+	if got.Load() != "Basic dTpw" {
+		t.Fatalf("Authorization %q", got.Load())
+	}
+}

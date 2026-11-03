@@ -188,6 +188,9 @@ func (a *App) hfResolve(ctx context.Context, repo *Repo, p string, depth int) (*
 // upstreamAttr is a header the upstream sent when a proxy cached the file (upstreamCommit, upstreamEtag,
 // upstreamLink); "" if there was none.
 func upstreamAttr(x *Asset, key string) string {
+	if !bytes.Contains(x.Attrs, []byte(key)) { // most assets carry no such header: skip parsing their attributes
+		return ""
+	}
 	var at map[string]string
 	json.Unmarshal(x.Attrs, &at)
 	return at[key]

@@ -353,6 +353,8 @@ func (a *App) fetchRemote(ctx context.Context, repo *Repo, u string, hdr http.He
 			req.Header.Set("Authorization", "Bearer "+repo.RemotePassword) // access token for gated and private repositories
 		} else if repo.RemoteUsername != "" {
 			req.SetBasicAuth(repo.RemoteUsername, repo.RemotePassword)
+		} else if repo.RemotePassword != "" {
+			req.Header.Set("Authorization", "Bearer "+repo.RemotePassword) // a token without a user name
 		}
 		return a.client.Do(req)
 	}
