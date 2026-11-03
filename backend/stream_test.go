@@ -214,6 +214,7 @@ func TestHuggingFaceCommitAndPinnedLink(t *testing.T) {
 	defer cdn.Close()
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Repo-Commit", commit)
+		w.Header().Set("X-Linked-Etag", `"`+strings.Repeat("cd", 32)+`"`)
 		http.Redirect(w, r, cdn.URL+"/blob", http.StatusFound)
 	}))
 	defer hub.Close()
@@ -223,6 +224,10 @@ func TestHuggingFaceCommitAndPinnedLink(t *testing.T) {
 	defer r1.Body.Close()
 	if got := r1.Header.Get("X-Repo-Commit"); got != commit {
 		t.Fatalf("commit header %q", got)
+	}
+	// huggingface_hub rejects an answer without an ETag ("Distant resource does not have an ETag")
+	if got := r1.Header.Get("ETag"); got != `"`+strings.Repeat("cd", 32)+`"` {
+		t.Fatalf("etag header %q", got)
 	}
 	readN(t, r1, 5)
 	r2, _ := getStream(t, e.srv.URL+"/repository/hf/org/model/resolve/"+commit+"/w.bin")
@@ -268,4 +273,64 @@ func TestWarmCache(t *testing.T) {
 		t.Fatalf("%d upstream requests, want 2", hits.Load())
 	}
 	e.must("bad path", 400, "POST", "/api/repositories/raw-proxy/warm", jsonBody(map[string]any{"paths": []string{"../x"}}), admin)
+}
+
+// Hugging Face clients depend on more than the file bytes: the ETag stays the same from the first (streamed)
+// answer to cached ones, a missing file says EntryNotFound, listing pages link back to the proxy, and
+// paths-info (a POST that only reads) is forwarded.
+func TestHuggingFaceClientCompatibility(t *testing.T) {
+	e := newEnv(t)
+	var hub *httptest.Server
+	hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/org/model/resolve/main/a.txt":
+			w.Header().Set("ETag", `"0123abc"`)
+			w.Header().Set("X-Repo-Commit", strings.Repeat("ab", 20))
+			w.Write([]byte("hello"))
+		case strings.HasPrefix(r.URL.Path, "/api/models/org/model/tree/"):
+			w.Header().Set("Link", `<`+hub.URL+`/api/models/org/model/tree/main?cursor=x>; rel="next"`)
+			w.Write([]byte("[]"))
+		case strings.Contains(r.URL.Path, "/paths-info/") && r.Method == "POST":
+			io.Copy(w, r.Body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+	e.must("create proxy", 200, "POST", "/api/repositories", jsonBody(map[string]any{"name": "hf2", "format": "huggingface", "type": "proxy", "remoteUrl": hub.URL}), admin)
+	do := func(method, path string, body io.Reader) *http.Response {
+		req, _ := http.NewRequest(method, e.srv.URL+"/repository/hf2/"+path, body)
+		req.SetBasicAuth("admin", "admin123")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	for i := 0; i < 2; i++ { // first a cache miss, then a cache hit
+		r := do("HEAD", "org/model/resolve/main/a.txt", nil)
+		r.Body.Close()
+		if got := r.Header.Get("ETag"); got != `"0123abc"` {
+			t.Fatalf("answer %d: ETag %q", i, got)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	r := do("HEAD", "org/model/resolve/main/nope.json", nil)
+	r.Body.Close()
+	if r.StatusCode != 404 || r.Header.Get("X-Error-Code") != "EntryNotFound" {
+		t.Fatalf("missing file: %d %q", r.StatusCode, r.Header.Get("X-Error-Code"))
+	}
+	for i := 0; i < 2; i++ {
+		r = do("GET", "api/models/org/model/tree/main", nil)
+		r.Body.Close()
+		if got := r.Header.Get("Link"); got != `<`+e.srv.URL+`/repository/hf2/api/models/org/model/tree/main?cursor=x>; rel="next"` {
+			t.Fatalf("listing %d: Link %q", i, got)
+		}
+	}
+	r = do("POST", "api/models/org/model/paths-info/main", strings.NewReader(`{"paths":["a.txt"]}`))
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	if r.StatusCode != 200 || string(b) != `{"paths":["a.txt"]}` {
+		t.Fatalf("paths-info: %d %q", r.StatusCode, b)
+	}
 }
