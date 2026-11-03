@@ -5,6 +5,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.2]
+
+Proxy credentials.
+
+### Fixed
+
+- A proxy configured with only a token (password, no user name) sent no credentials at all. It is now sent as a
+  Bearer token, so private npm registries and similar upstreams work; with a user name it is still Basic auth.
+
 ## [1.9.1]
 
 Hugging Face clients work against a proxy.
